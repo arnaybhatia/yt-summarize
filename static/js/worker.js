@@ -8,13 +8,41 @@ import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transfo
 env.allowLocalModels  = false;
 env.useBrowserCache   = true;   // Cache model weights after first download
 
-const MODEL = 'onnx-community/whisper-base';
-
 let transcriber = null;
 let currentDevice = 'wasm';
+let currentProfile = null;
+
+function getRuntimeProfile() {
+  const search = new URL(self.location.href).searchParams;
+  const explicitPiMode = search.get('pi') === '1';
+  const cores = self.navigator.hardwareConcurrency || 2;
+  const memory = self.navigator.deviceMemory || 0;
+  const likelyLowPower = explicitPiMode || cores <= 4 || (memory && memory <= 4);
+
+  if (likelyLowPower) {
+    return {
+      label: 'Pi mode',
+      model: 'onnx-community/whisper-tiny',
+      wasmDtype: 'q8',
+      gpuDtype: 'fp16',
+      chunkLength: 20,
+      strideLength: 3,
+    };
+  }
+
+  return {
+    label: 'Standard mode',
+    model: 'onnx-community/whisper-base',
+    wasmDtype: 'q8',
+    gpuDtype: 'fp32',
+    chunkLength: 30,
+    strideLength: 5,
+  };
+}
 
 // ─── Model init ──────────────────────────────────────────────────────────────
 async function initModel() {
+  currentProfile = getRuntimeProfile();
   let gpuFailReason = null;
 
   if ('gpu' in self.navigator) {
@@ -33,17 +61,17 @@ async function initModel() {
   }
 
   if (gpuFailReason) {
-    self.postMessage({ type: 'status', message: `WASM Fallback: ${gpuFailReason}`, device: 'wasm' });
+    self.postMessage({ type: 'status', message: `${currentProfile.label}: WASM fallback (${gpuFailReason})`, device: 'wasm' });
   } else {
-    self.postMessage({ type: 'status', message: `Loading Whisper model (WebGPU)…`, device: 'webgpu' });
+    self.postMessage({ type: 'status', message: `${currentProfile.label}: loading Whisper model (WebGPU)…`, device: 'webgpu' });
   }
 
-  // WebGPU needs fp32/fp16; WASM works best with q8 (quantised, ~4× smaller)
-  const dtype = currentDevice === 'webgpu' ? 'fp32' : 'q8';
+  // Keep the Pi profile on the smallest reasonable model and quantized WASM.
+  const dtype = currentDevice === 'webgpu' ? currentProfile.gpuDtype : currentProfile.wasmDtype;
 
   transcriber = await pipeline(
     'automatic-speech-recognition',
-    MODEL,
+    currentProfile.model,
     {
       device: currentDevice,
       dtype,
@@ -51,7 +79,12 @@ async function initModel() {
     }
   );
 
-  self.postMessage({ type: 'model-ready', device: currentDevice });
+  self.postMessage({
+    type: 'model-ready',
+    device: currentDevice,
+    profile: currentProfile.label,
+    model: currentProfile.model,
+  });
 }
 
 
@@ -74,8 +107,8 @@ self.addEventListener('message', async ({ data }) => {
       try {
         const result = await transcriber(data.audio, {
           return_timestamps:  true,
-          chunk_length_s:     30,
-          stride_length_s:    5,
+          chunk_length_s:     currentProfile.chunkLength,
+          stride_length_s:    currentProfile.strideLength,
           language:           null,   // auto-detect
         });
         self.postMessage({ type: 'result', result });

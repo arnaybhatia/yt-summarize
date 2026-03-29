@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Transcribe — YouTube, Instagram & TikTok</title>
-    <meta name="description" content="Instantly transcribe YouTube, Instagram Reels, and TikTok videos in your browser using AI. No server uploads. Download timestamped or plain transcripts." />
+    <title>Transcribe + Download Media</title>
+    <meta name="description" content="Run transcription in your browser while a Raspberry Pi server handles media extraction and downloads from YouTube, Instagram, TikTok, and VSCO." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" crossorigin />
@@ -22,7 +22,7 @@
           <span class="logo-icon">⚡</span>
           <span class="logo-text">Transcribe</span>
         </div>
-        <p class="tagline">YouTube · Instagram · TikTok</p>
+        <p class="tagline">YouTube · Instagram · TikTok · VSCO</p>
       </header>
 
       <!-- Model Status Bar -->
@@ -40,8 +40,8 @@
       <!-- Input Card -->
       <main class="main-content">
         <section class="card input-card">
-          <h1 class="card-title">Paste a video link</h1>
-          <p class="card-subtitle">YouTube, Instagram Reels, and TikTok. Transcription runs entirely in your browser.</p>
+          <h1 class="card-title">Paste a media link</h1>
+          <p class="card-subtitle">YouTube, Instagram, TikTok, and VSCO. For speed on Raspberry Pi, downloads run on the server and Whisper runs in your browser.</p>
 
           <div class="input-row">
             <div class="url-input-wrapper">
@@ -58,10 +58,45 @@
             </div>
           </div>
 
-          <button class="btn btn-primary" id="transcribe-btn" disabled>
-            <span class="btn-text" id="transcribe-btn-text">Loading model…</span>
-            <span class="btn-icon">→</span>
-          </button>
+          <div class="primary-actions">
+            <button class="btn btn-secondary" id="analyze-btn">
+              <span class="btn-text">Load download options</span>
+            </button>
+            <button class="btn btn-primary" id="transcribe-btn" disabled>
+              <span class="btn-text" id="transcribe-btn-text">Loading model…</span>
+              <span class="btn-icon">→</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="card download-card" id="download-card" hidden>
+          <div class="results-header">
+            <div>
+              <h2 class="video-title" id="download-title"></h2>
+              <p class="card-subtitle download-subtitle" id="download-recommendation"></p>
+            </div>
+            <span class="platform-badge visible" id="download-platform-badge"></span>
+          </div>
+
+          <div class="download-grid">
+            <label class="field">
+              <span class="field-label">Download type</span>
+              <select id="download-kind" class="select-input"></select>
+            </label>
+            <label class="field">
+              <span class="field-label">Quality</span>
+              <select id="download-option" class="select-input"></select>
+            </label>
+          </div>
+
+          <div class="action-bar">
+            <button class="btn btn-accent" id="download-selected-btn"><span>⬇</span> Download selected</button>
+          </div>
+
+          <div class="video-progress" id="download-progress" hidden>
+            <div class="progress-bar-track"><div class="progress-bar-fill" id="download-progress-bar"></div></div>
+            <p class="progress-label" id="download-progress-label">Preparing download…</p>
+          </div>
         </section>
 
         <!-- Processing State -->
@@ -115,18 +150,12 @@
           <div class="action-bar">
             <button class="btn btn-secondary" id="download-plain-btn"><span>⬇</span> Plain .txt</button>
             <button class="btn btn-secondary" id="download-ts-btn"><span>⬇</span> Timestamped .txt</button>
-            <button class="btn btn-accent" id="download-video-btn"><span>▶</span> Download Video</button>
-          </div>
-
-          <div class="video-progress" id="video-progress" hidden>
-            <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar-fill"></div></div>
-            <p class="progress-label" id="progress-label">Preparing video…</p>
           </div>
         </section>
       </main>
 
       <footer class="footer">
-        <p>Transcription via <a href="https://huggingface.co/onnx-community/whisper-base" target="_blank">Whisper</a> · runs in your browser · powered by <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">yt-dlp</a></p>
+        <p>Whisper runs on your computer for speed · Raspberry Pi handles downloads and extraction · powered by <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">yt-dlp</a></p>
       </footer>
     </div>
 

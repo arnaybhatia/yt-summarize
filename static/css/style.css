@@ -90,6 +90,8 @@ a:hover{text-decoration:underline}
 /* ═══════════════════════════════════════════ URL Input */
 .input-row{margin-bottom:16px}
 .url-input-wrapper{position:relative;display:flex;align-items:center}
+.primary-actions{display:flex;gap:12px;flex-wrap:wrap}
+.primary-actions .btn{flex:1 1 220px;justify-content:center}
 .input-icon{position:absolute;left:14px;font-size:1.1rem;pointer-events:none;z-index:1}
 .url-input{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 120px 14px 44px;color:var(--text-primary);font-family:var(--font);font-size:.95rem;outline:none;transition:border-color .2s,box-shadow .2s,background .2s}
 .url-input::placeholder{color:var(--text-muted)}
@@ -151,6 +153,12 @@ a:hover{text-decoration:underline}
 .transcript-container::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:3px}
 .transcript-text{font-family:var(--font);font-size:.88rem;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;line-height:1.7}
 .action-bar{display:flex;gap:10px;flex-wrap:wrap}
+.download-subtitle{margin:6px 0 0;max-width:420px}
+.download-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:20px 0}
+.field{display:flex;flex-direction:column;gap:8px}
+.field-label{font-size:.78rem;color:var(--text-secondary);letter-spacing:.06em;text-transform:uppercase}
+.select-input{background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;color:var(--text-primary);font-family:var(--font);font-size:.92rem;outline:none}
+.select-input:focus{border-color:var(--border-focus);box-shadow:0 0 0 3px rgba(139,92,246,.15)}
 
 /* Video progress */
 .video-progress{margin-top:16px}
@@ -167,7 +175,9 @@ a:hover{text-decoration:underline}
   .app-wrapper{padding:32px 16px 48px}
   .card{padding:24px 18px}
   .results-header{flex-direction:column}
+  .primary-actions{flex-direction:column}
   .action-bar{flex-direction:column}
+  .download-grid{grid-template-columns:1fr}
   .btn{width:100%;justify-content:center}
   .url-input{padding-right:14px}
   .platform-badge{display:none}

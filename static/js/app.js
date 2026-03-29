@@ -1,60 +1,82 @@
 /* ─────────────────────────────────────────────────────────────────────────────
    app.js  ·  Main thread orchestrator
-   Flow:
-     1. Spawn Web Worker → load Whisper model (WebGPU or WASM)
-     2. User pastes URL → POST /api/fetch-audio → receive audio blob
-     3. Decode audio to Float32Array @ 16 kHz  (Web Audio API)
-     4. Send Float32Array to Worker → get transcript chunks back
-     5. Render transcript, enable downloads
+   Pi-optimized architecture:
+     1. Raspberry Pi handles URL analysis + downloads
+     2. Browser on your computer handles Whisper transcription
 ───────────────────────────────────────────────────────────────────────────── */
 
-/* ─── Elements ─────────────────────────────────────────────────────────────── */
-const urlInput          = document.getElementById('url-input');
-const platformBadge     = document.getElementById('platform-badge');
-const platformIcon      = document.getElementById('platform-icon');
-const transcribeBtn     = document.getElementById('transcribe-btn');
+const urlInput = document.getElementById('url-input');
+const platformBadge = document.getElementById('platform-badge');
+const platformIcon = document.getElementById('platform-icon');
+const analyzeBtn = document.getElementById('analyze-btn');
+const transcribeBtn = document.getElementById('transcribe-btn');
 const transcribeBtnText = document.getElementById('transcribe-btn-text');
 
-const modelStatusBar    = document.getElementById('model-status-bar');
-const modelSpinner      = document.getElementById('model-spinner');
-const modelStatusText   = document.getElementById('model-status-text');
-const modelDeviceBadge  = document.getElementById('model-device-badge');
+const modelStatusBar = document.getElementById('model-status-bar');
+const modelSpinner = document.getElementById('model-spinner');
+const modelStatusText = document.getElementById('model-status-text');
+const modelDeviceBadge = document.getElementById('model-device-badge');
 const modelProgressFill = document.getElementById('model-progress-fill');
 
-const loadingCard       = document.getElementById('loading-card');
-const stepDownload      = document.getElementById('step-download');
-const stepTranscribe    = document.getElementById('step-transcribe');
-const errorCard         = document.getElementById('error-card');
-const errorText         = document.getElementById('error-text');
-const errorRetryBtn     = document.getElementById('error-retry-btn');
-const resultsCard       = document.getElementById('results-card');
-const videoTitle        = document.getElementById('video-title');
-const transcriptText    = document.getElementById('transcript-text');
-const btnPlain          = document.getElementById('btn-plain');
-const btnTimestamped    = document.getElementById('btn-timestamped');
-const dlPlainBtn        = document.getElementById('download-plain-btn');
-const dlTsBtn           = document.getElementById('download-ts-btn');
-const dlVideoBtn        = document.getElementById('download-video-btn');
-const videoProgress     = document.getElementById('video-progress');
-const progressLabel     = document.getElementById('progress-label');
-const copyBtn           = document.getElementById('copy-btn');
+const loadingCard = document.getElementById('loading-card');
+const stepDownload = document.getElementById('step-download');
+const stepTranscribe = document.getElementById('step-transcribe');
+const errorCard = document.getElementById('error-card');
+const errorText = document.getElementById('error-text');
+const errorRetryBtn = document.getElementById('error-retry-btn');
+const resultsCard = document.getElementById('results-card');
+const downloadCard = document.getElementById('download-card');
 
-/* ─── State ─────────────────────────────────────────────────────────────────── */
-const state = { plain: '', timestamped: '', title: '', url: '', view: 'timestamped', modelReady: false };
+const downloadTitle = document.getElementById('download-title');
+const downloadRecommendation = document.getElementById('download-recommendation');
+const downloadPlatformBadge = document.getElementById('download-platform-badge');
+const downloadKindSelect = document.getElementById('download-kind');
+const downloadOptionSelect = document.getElementById('download-option');
+const downloadSelectedBtn = document.getElementById('download-selected-btn');
+const downloadProgress = document.getElementById('download-progress');
+const downloadProgressLabel = document.getElementById('download-progress-label');
 
-/* ─── Web Worker ────────────────────────────────────────────────────────────── */
-const worker = new Worker('/js/worker.js', { type: 'module' });
+const videoTitle = document.getElementById('video-title');
+const transcriptText = document.getElementById('transcript-text');
+const btnPlain = document.getElementById('btn-plain');
+const btnTimestamped = document.getElementById('btn-timestamped');
+const dlPlainBtn = document.getElementById('download-plain-btn');
+const dlTsBtn = document.getElementById('download-ts-btn');
+const copyBtn = document.getElementById('copy-btn');
+
+const state = {
+  plain: '',
+  timestamped: '',
+  title: '',
+  url: '',
+  view: 'timestamped',
+  modelReady: false,
+  lowPowerMode: false,
+  downloadMeta: null,
+};
+
+function shouldUseLowPowerMode() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('pi') === '1') return true;
+
+  const cores = navigator.hardwareConcurrency || 2;
+  const memory = navigator.deviceMemory || 0;
+  return cores <= 4 || (memory && memory <= 4);
+}
+
+state.lowPowerMode = shouldUseLowPowerMode();
+
+const workerUrl = state.lowPowerMode ? '/js/worker.js?pi=1' : '/js/worker.js';
+const worker = new Worker(workerUrl, { type: 'module' });
 
 worker.addEventListener('message', ({ data }) => {
   switch (data.type) {
-
     case 'status':
       modelStatusText.textContent = data.message;
       break;
 
     case 'model-progress': {
       const p = data.data;
-      // p.status can be 'download', 'initiate', 'progress', 'done', 'ready'
       if (p.status === 'progress' && p.total) {
         const pct = Math.round((p.loaded / p.total) * 100);
         modelProgressFill.style.width = `${pct}%`;
@@ -67,17 +89,16 @@ worker.addEventListener('message', ({ data }) => {
 
     case 'model-ready': {
       state.modelReady = true;
-      const device = data.device;          // 'webgpu' or 'wasm'
+      const device = data.device;
 
       modelStatusBar.classList.add('ready');
       modelSpinner.classList.add('done');
-      modelStatusText.textContent = `Whisper ready`;
+      modelStatusText.textContent = `${data.profile || 'Whisper'} ready`;
 
-      modelDeviceBadge.textContent = device === 'webgpu' ? '⚡ WebGPU' : 'WASM';
-      modelDeviceBadge.className   = `model-device-badge visible ${device}`;
+      modelDeviceBadge.textContent = device === 'webgpu' ? 'WebGPU' : 'WASM';
+      modelDeviceBadge.className = `model-device-badge visible ${device}`;
 
-      transcribeBtn.disabled      = false;
-      transcribeBtnText.textContent = 'Transcribe';
+      updateTranscribeAvailability(detectPlatform(urlInput.value.trim()));
       break;
     }
 
@@ -91,98 +112,203 @@ worker.addEventListener('message', ({ data }) => {
   }
 });
 
-// Kick off model load immediately
 worker.postMessage({ type: 'load' });
 
-/* ─── Platform Detection ────────────────────────────────────────────────────── */
 const platformMeta = {
-  youtube:   { label: 'YouTube',   icon: '▶' },
+  youtube: { label: 'YouTube', icon: '▶' },
   instagram: { label: 'Instagram', icon: '📸' },
-  tiktok:    { label: 'TikTok',    icon: '🎵' },
+  tiktok: { label: 'TikTok', icon: '🎵' },
+  vsco: { label: 'VSCO', icon: '🖼' },
 };
 
 function detectPlatform(url) {
   const u = url.toLowerCase();
   if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube';
   if (u.includes('instagram.com')) return 'instagram';
-  if (u.includes('tiktok.com'))    return 'tiktok';
+  if (u.includes('tiktok.com')) return 'tiktok';
+  if (u.includes('vsco.co')) return 'vsco';
   return null;
+}
+
+function renderPlatformBadge(platform) {
+  platformBadge.className = 'platform-badge';
+  if (platform && platformMeta[platform]) {
+    platformBadge.textContent = platformMeta[platform].label;
+    platformBadge.classList.add('visible', platform);
+    platformIcon.textContent = platformMeta[platform].icon;
+  } else {
+    platformIcon.textContent = '🔗';
+  }
+}
+
+function updateTranscribeAvailability(platform) {
+  if (!state.modelReady) {
+    transcribeBtn.disabled = true;
+    transcribeBtnText.textContent = 'Loading model…';
+    return;
+  }
+
+  if (platform === 'vsco') {
+    transcribeBtn.disabled = true;
+    transcribeBtnText.textContent = 'VSCO is download only';
+    return;
+  }
+
+  transcribeBtn.disabled = false;
+  transcribeBtnText.textContent = 'Transcribe on this browser';
 }
 
 urlInput.addEventListener('input', () => {
   state.url = urlInput.value.trim();
+  state.downloadMeta = null;
+  downloadCard.hidden = true;
   const platform = detectPlatform(state.url);
-  platformBadge.className = 'platform-badge';
-  if (platform) {
-    platformBadge.textContent = platformMeta[platform].label;
-    platformBadge.classList.add('visible', platform);
-    platformIcon.textContent  = platformMeta[platform].icon;
-  } else {
-    platformIcon.textContent  = '🔗';
-  }
+  renderPlatformBadge(platform);
+  updateTranscribeAvailability(platform);
 });
 
-/* ─── UI State Helpers ──────────────────────────────────────────────────────── */
 function showSection(el) {
-  [loadingCard, errorCard, resultsCard].forEach(c => c.hidden = true);
+  [loadingCard, errorCard, resultsCard].forEach(card => { card.hidden = true; });
   if (el) el.hidden = false;
 }
 
-function showError(msg) {
-  errorText.textContent = msg;
+function showError(message) {
+  errorText.textContent = message;
   showSection(errorCard);
-  transcribeBtn.disabled = false;
+  transcribeBtn.disabled = !state.modelReady;
+  analyzeBtn.disabled = false;
+  downloadSelectedBtn.disabled = false;
 }
 
 function setStep(active) {
-  // active: 'download' | 'transcribe'
-  stepDownload.classList.toggle('active',   active === 'download');
-  stepDownload.classList.toggle('done',     active === 'transcribe');
+  stepDownload.classList.toggle('active', active === 'download');
+  stepDownload.classList.toggle('done', active === 'transcribe');
   stepTranscribe.classList.toggle('active', active === 'transcribe');
   stepTranscribe.classList.remove('step-dimmed');
   if (active === 'download') stepTranscribe.classList.add('step-dimmed');
 }
 
-/* ─── Audio Decoding ────────────────────────────────────────────────────────── */
 async function decodeAudioTo16kHz(blob) {
   const arrayBuffer = await blob.arrayBuffer();
-  const ctx         = new AudioContext();
+  const ctx = new AudioContext({ sampleRate: 16_000 });
   const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-  ctx.close();
+  await ctx.close();
 
   const targetRate = 16_000;
   if (audioBuffer.sampleRate === targetRate) {
-    return audioBuffer.getChannelData(0);
+    return audioBuffer.getChannelData(0).slice();
   }
 
-  // Resample to 16 kHz using OfflineAudioContext
-  const frames   = Math.ceil(audioBuffer.duration * targetRate);
-  const offline  = new OfflineAudioContext(1, frames, targetRate);
-  const source   = offline.createBufferSource();
-  source.buffer  = audioBuffer;
+  const frames = Math.ceil(audioBuffer.duration * targetRate);
+  const offline = new OfflineAudioContext(1, frames, targetRate);
+  const source = offline.createBufferSource();
+  source.buffer = audioBuffer;
   source.connect(offline.destination);
   source.start(0);
   const resampled = await offline.startRendering();
-  return resampled.getChannelData(0);
+  return resampled.getChannelData(0).slice();
 }
 
-/* ─── Transcribe Flow ───────────────────────────────────────────────────────── */
+function groupOptionsByKind(options) {
+  const grouped = new Map();
+  for (const option of options) {
+    if (!grouped.has(option.kind)) grouped.set(option.kind, []);
+    grouped.get(option.kind).push(option);
+  }
+  return grouped;
+}
+
+function populateDownloadSelectors(meta) {
+  const grouped = groupOptionsByKind(meta.options || []);
+  downloadKindSelect.innerHTML = '';
+
+  for (const [kind, options] of grouped.entries()) {
+    const el = document.createElement('option');
+    el.value = kind;
+    el.textContent = `${kind.charAt(0).toUpperCase()}${kind.slice(1)} (${options.length})`;
+    downloadKindSelect.appendChild(el);
+  }
+
+  if (!downloadKindSelect.value) {
+    const preferred = grouped.has('video') ? 'video' : grouped.keys().next().value;
+    downloadKindSelect.value = preferred || '';
+  }
+
+  populateDownloadOptionSelect(downloadKindSelect.value);
+}
+
+function populateDownloadOptionSelect(kind) {
+  const options = (state.downloadMeta?.options || []).filter(option => option.kind === kind);
+  downloadOptionSelect.innerHTML = '';
+
+  for (const option of options) {
+    const el = document.createElement('option');
+    el.value = option.id;
+    el.textContent = option.label;
+    downloadOptionSelect.appendChild(el);
+  }
+}
+
+function renderDownloadMeta(meta) {
+  state.downloadMeta = meta;
+  downloadTitle.textContent = meta.title;
+  downloadRecommendation.textContent = meta.transcription_recommendation;
+
+  downloadPlatformBadge.className = 'platform-badge visible';
+  downloadPlatformBadge.textContent = platformMeta[meta.platform]?.label || meta.platform;
+  if (meta.platform) downloadPlatformBadge.classList.add(meta.platform);
+
+  populateDownloadSelectors(meta);
+  downloadCard.hidden = false;
+}
+
+async function loadDownloadOptions() {
+  const url = urlInput.value.trim();
+  if (!url) {
+    urlInput.focus();
+    return;
+  }
+
+  analyzeBtn.disabled = true;
+  try {
+    const res = await fetch('/api/media-options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Server error ${res.status}`);
+    }
+
+    const meta = await res.json();
+    if (!meta.options?.length) {
+      throw new Error('No download options were found for this URL.');
+    }
+
+    renderDownloadMeta(meta);
+  } catch (err) {
+    showError(err.message || 'Failed to load download options.');
+  } finally {
+    analyzeBtn.disabled = false;
+  }
+}
+
 async function doTranscribe() {
   const url = urlInput.value.trim();
   if (!url) {
     urlInput.focus();
-    urlInput.style.borderColor = 'var(--error)';
-    setTimeout(() => { urlInput.style.borderColor = ''; }, 1200);
     return;
   }
   if (!state.modelReady) return;
 
   transcribeBtn.disabled = true;
+  analyzeBtn.disabled = true;
   showSection(loadingCard);
   setStep('download');
 
   try {
-    // Step 1 — fetch audio from server
     const res = await fetch('/api/fetch-audio', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -194,29 +320,23 @@ async function doTranscribe() {
       throw new Error(err.error || `Server error ${res.status}`);
     }
 
-    const title      = res.headers.get('X-Video-Title') || 'Transcript';
-    const audioBlob  = await res.blob();
+    const title = res.headers.get('X-Video-Title') || 'Transcript';
+    const audioBlob = await res.blob();
 
-    // Step 2 — decode audio in browser
     setStep('transcribe');
     const float32 = await decodeAudioTo16kHz(audioBlob);
 
-    // Step 3 — send to worker (transfer ownership to avoid copy)
     state.title = title;
-    state.url   = url;
+    state.url = url;
     worker.postMessage({ type: 'transcribe', audio: float32 }, [float32.buffer]);
-
   } catch (err) {
-    showError(err.message || 'Failed. Please try again.');
+    showError(err.message || 'Transcription failed.');
     transcribeBtn.disabled = false;
+  } finally {
+    analyzeBtn.disabled = false;
   }
 }
 
-transcribeBtn.addEventListener('click', doTranscribe);
-urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') doTranscribe(); });
-errorRetryBtn.addEventListener('click', () => showSection(null));
-
-/* ─── Handle Transcript Result ──────────────────────────────────────────────── */
 function formatPlain(result) {
   return (result.text || '').trim();
 }
@@ -228,36 +348,33 @@ function formatTimestamped(result) {
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
-    const ts = `[${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}]`;
+    const ts = `[${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}]`;
     return `${ts} ${chunk.text.trim()}`;
   }).join('\n');
 }
 
 function handleTranscriptResult(result) {
-  state.plain       = formatPlain(result);
+  state.plain = formatPlain(result);
   state.timestamped = formatTimestamped(result);
 
-  videoTitle.textContent     = state.title;
-  transcriptText.textContent = state.plain;
+  videoTitle.textContent = state.title;
+  transcriptText.textContent = state.timestamped;
   setView('timestamped');
   showSection(resultsCard);
   transcribeBtn.disabled = false;
 }
 
-/* ─── Toggle Plain / Timestamped ───────────────────────────────────────────── */
 function setView(view) {
   state.view = view;
   transcriptText.textContent = view === 'plain' ? state.plain : state.timestamped;
   btnPlain.classList.toggle('active', view === 'plain');
   btnTimestamped.classList.toggle('active', view === 'timestamped');
 }
-btnPlain.addEventListener('click',       () => setView('plain'));
-btnTimestamped.addEventListener('click', () => setView('timestamped'));
 
-/* ─── Copy to Clipboard ────────────────────────────────────────────────────── */
 copyBtn.addEventListener('click', async () => {
   const text = state.view === 'plain' ? state.plain : state.timestamped;
   if (!text) return;
+
   try {
     await navigator.clipboard.writeText(text);
     copyBtn.innerHTML = '<span class="copy-icon">✓</span> Copied!';
@@ -268,35 +385,45 @@ copyBtn.addEventListener('click', async () => {
     }, 1800);
   } catch {
     copyBtn.textContent = 'Failed';
-    setTimeout(() => { copyBtn.innerHTML = '<span class="copy-icon">📋</span> Copy'; }, 1500);
+    setTimeout(() => {
+      copyBtn.innerHTML = '<span class="copy-icon">📋</span> Copy';
+    }, 1500);
   }
 });
 
-/* ─── Download Transcript ───────────────────────────────────────────────────── */
 function safeFilename(title) {
   return (title || 'transcript').replace(/[^a-z0-9 _-]/gi, '').trim().replace(/\s+/g, '_');
 }
+
 function downloadText(content, filename) {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const a    = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: filename,
+  });
   a.click();
   URL.revokeObjectURL(a.href);
 }
-dlPlainBtn.addEventListener('click', () => downloadText(state.plain,       `${safeFilename(state.title)}_plain.txt`));
-dlTsBtn.addEventListener('click',   () => downloadText(state.timestamped,  `${safeFilename(state.title)}_timestamped.txt`));
 
-/* ─── Download Video ────────────────────────────────────────────────────────── */
-dlVideoBtn.addEventListener('click', async () => {
-  if (!state.url) return;
-  dlVideoBtn.disabled     = true;
-  videoProgress.hidden    = false;
-  progressLabel.textContent = 'Downloading highest quality video…';
+async function downloadSelectedMedia() {
+  if (!state.downloadMeta) return;
+
+  const selectedOption = state.downloadMeta.options.find(option => option.id === downloadOptionSelect.value);
+  if (!selectedOption) return;
+
+  downloadSelectedBtn.disabled = true;
+  downloadProgress.hidden = false;
+  downloadProgressLabel.textContent = `Preparing ${selectedOption.label}…`;
 
   try {
-    const res = await fetch('/api/download-video', {
+    const res = await fetch('/api/download-media', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: state.url }),
+      body: JSON.stringify({
+        url: urlInput.value.trim(),
+        title: state.downloadMeta.title,
+        option: selectedOption,
+      }),
     });
 
     if (!res.ok) {
@@ -305,20 +432,40 @@ dlVideoBtn.addEventListener('click', async () => {
     }
 
     const disposition = res.headers.get('Content-Disposition') || '';
-    const match       = disposition.match(/filename="?([^"]+)"?/);
-    const filename    = match ? match[1] : 'video.mp4';
+    const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^"]+)"?/i);
+    const filename = match ? decodeURIComponent(match[1].replace(/"/g, '')) : 'download.bin';
 
     const blob = await res.blob();
-    const a    = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename });
+    const a = Object.assign(document.createElement('a'), {
+      href: URL.createObjectURL(blob),
+      download: filename,
+    });
     a.click();
     URL.revokeObjectURL(a.href);
 
-    progressLabel.textContent = '✓ Video downloaded!';
-    setTimeout(() => { videoProgress.hidden = true; }, 2500);
+    downloadProgressLabel.textContent = `Downloaded ${selectedOption.label}`;
+    setTimeout(() => {
+      downloadProgress.hidden = true;
+    }, 1800);
   } catch (err) {
-    progressLabel.textContent = `Error: ${err.message}`;
-    setTimeout(() => { videoProgress.hidden = true; }, 3500);
+    downloadProgressLabel.textContent = `Error: ${err.message}`;
+    setTimeout(() => {
+      downloadProgress.hidden = true;
+    }, 3500);
   } finally {
-    dlVideoBtn.disabled = false;
+    downloadSelectedBtn.disabled = false;
   }
+}
+
+analyzeBtn.addEventListener('click', loadDownloadOptions);
+downloadKindSelect.addEventListener('change', event => populateDownloadOptionSelect(event.target.value));
+downloadSelectedBtn.addEventListener('click', downloadSelectedMedia);
+transcribeBtn.addEventListener('click', doTranscribe);
+urlInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') loadDownloadOptions();
 });
+errorRetryBtn.addEventListener('click', () => showSection(null));
+btnPlain.addEventListener('click', () => setView('plain'));
+btnTimestamped.addEventListener('click', () => setView('timestamped'));
+dlPlainBtn.addEventListener('click', () => downloadText(state.plain, `${safeFilename(state.title)}_plain.txt`));
+dlTsBtn.addEventListener('click', () => downloadText(state.timestamped, `${safeFilename(state.title)}_timestamped.txt`));
