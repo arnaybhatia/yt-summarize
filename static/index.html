@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Transcribe — YouTube, Instagram & TikTok</title>
+    <meta name="description" content="Instantly transcribe YouTube, Instagram Reels, and TikTok videos in your browser using AI. No server uploads. Download timestamped or plain transcripts." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" crossorigin />
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <div class="bg-orb orb-1"></div>
+    <div class="bg-orb orb-2"></div>
+    <div class="bg-orb orb-3"></div>
+
+    <div class="app-wrapper">
+      <!-- Header -->
+      <header class="header">
+        <div class="logo">
+          <span class="logo-icon">⚡</span>
+          <span class="logo-text">Transcribe</span>
+        </div>
+        <p class="tagline">YouTube · Instagram · TikTok</p>
+      </header>
+
+      <!-- Model Status Bar -->
+      <div class="model-status-bar" id="model-status-bar">
+        <div class="model-status-inner">
+          <div class="model-spinner" id="model-spinner"></div>
+          <span class="model-status-text" id="model-status-text">Initialising Whisper…</span>
+          <span class="model-device-badge" id="model-device-badge"></span>
+        </div>
+        <div class="model-progress-track" id="model-progress-track">
+          <div class="model-progress-fill" id="model-progress-fill"></div>
+        </div>
+      </div>
+
+      <!-- Input Card -->
+      <main class="main-content">
+        <section class="card input-card">
+          <h1 class="card-title">Paste a video link</h1>
+          <p class="card-subtitle">YouTube, Instagram Reels, and TikTok. Transcription runs entirely in your browser.</p>
+
+          <div class="input-row">
+            <div class="url-input-wrapper">
+              <span class="input-icon" id="platform-icon">🔗</span>
+              <input
+                type="url"
+                id="url-input"
+                class="url-input"
+                placeholder="https://youtube.com/watch?v=..."
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <span class="platform-badge" id="platform-badge"></span>
+            </div>
+          </div>
+
+          <button class="btn btn-primary" id="transcribe-btn" disabled>
+            <span class="btn-text" id="transcribe-btn-text">Loading model…</span>
+            <span class="btn-icon">→</span>
+          </button>
+        </section>
+
+        <!-- Processing State -->
+        <section class="card loading-card" id="loading-card" hidden>
+          <div class="loading-steps">
+            <div class="step" id="step-download">
+              <div class="step-icon-wrap"><span class="step-icon">⬇</span></div>
+              <div>
+                <p class="step-label">Fetching audio</p>
+                <p class="step-sub">Downloading from server…</p>
+              </div>
+            </div>
+            <div class="step step-dimmed" id="step-transcribe">
+              <div class="step-icon-wrap"><span class="step-icon">🎙</span></div>
+              <div>
+                <p class="step-label">Transcribing</p>
+                <p class="step-sub">Running Whisper in-browser…</p>
+              </div>
+            </div>
+          </div>
+          <div class="spinner-wrapper"><div class="spinner"></div></div>
+        </section>
+
+        <!-- Error State -->
+        <section class="card error-card" id="error-card" hidden>
+          <div class="error-icon">✕</div>
+          <p class="error-text" id="error-text">Something went wrong.</p>
+          <button class="btn btn-ghost" id="error-retry-btn">Try again</button>
+        </section>
+
+        <!-- Results -->
+        <section class="card results-card" id="results-card" hidden>
+          <div class="results-header">
+            <div>
+              <h2 class="video-title" id="video-title"></h2>
+              <p class="results-subtitle">Transcript ready</p>
+            </div>
+            <div class="view-controls">
+              <div class="view-toggle">
+                <button class="toggle-btn active" id="btn-timestamped">Timestamped</button>
+                <button class="toggle-btn" id="btn-plain">Plain</button>
+              </div>
+              <button class="btn btn-copy" id="copy-btn" title="Copy to clipboard"><span class="copy-icon">📋</span> Copy</button>
+            </div>
+          </div>
+
+          <div class="transcript-container">
+            <pre class="transcript-text" id="transcript-text"></pre>
+          </div>
+
+          <div class="action-bar">
+            <button class="btn btn-secondary" id="download-plain-btn"><span>⬇</span> Plain .txt</button>
+            <button class="btn btn-secondary" id="download-ts-btn"><span>⬇</span> Timestamped .txt</button>
+            <button class="btn btn-accent" id="download-video-btn"><span>▶</span> Download Video</button>
+          </div>
+
+          <div class="video-progress" id="video-progress" hidden>
+            <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-bar-fill"></div></div>
+            <p class="progress-label" id="progress-label">Preparing video…</p>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <p>Transcription via <a href="https://huggingface.co/onnx-community/whisper-base" target="_blank">Whisper</a> · runs in your browser · powered by <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">yt-dlp</a></p>
+      </footer>
+    </div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
