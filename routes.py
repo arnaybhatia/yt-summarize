@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
@@ -18,6 +19,9 @@ DEFAULT_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 )
 DIRECT_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+WHISPER_LINE_RE = re.compile(
+    r"^\[(\d{2}):(\d{2}):(\d{2}\.\d{3}) --> (\d{2}):(\d{2}):(\d{2}\.\d{3})\]\s*(.*)$"
+)
 
 
 def _cleanup_dir(path: str) -> None:
@@ -278,15 +282,125 @@ def _build_media_options(url: str) -> dict:
         "is_gallery": has_gallery,
         "options": options,
         "transcription_recommendation": (
-            "Run Whisper in your browser/computer. Let the Raspberry Pi focus on downloads and API work."
+            "Browser Whisper is faster on most setups. Raspberry Pi transcription is available if whisper.cpp is installed."
         ),
     }
+
+
+def _timestamp_to_seconds(hours: str, minutes: str, seconds: str) -> float:
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def _parse_whisper_output(stdout: str) -> dict:
+    chunks = []
+    texts = []
+    for line in stdout.splitlines():
+        match = WHISPER_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        start_h, start_m, start_s, end_h, end_m, end_s, text = match.groups()
+        cleaned = text.strip()
+        if not cleaned:
+            continue
+        chunks.append(
+            {
+                "timestamp": [
+                    _timestamp_to_seconds(start_h, start_m, start_s),
+                    _timestamp_to_seconds(end_h, end_m, end_s),
+                ],
+                "text": cleaned,
+            }
+        )
+        texts.append(cleaned)
+    if not chunks:
+        raise ValueError("whisper.cpp completed but returned no transcript segments.")
+    return {"text": " ".join(texts).strip(), "chunks": chunks}
 
 
 def _download_direct_file(url: str, destination: str) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_UA})
     with urllib.request.urlopen(req, timeout=60) as resp, open(destination, "wb") as f:
         shutil.copyfileobj(resp, f)
+
+
+def _download_audio_source(url: str) -> tuple[str, str, str]:
+    tmp_dir = tempfile.mkdtemp()
+    output_template = os.path.join(tmp_dir, "audio.%(ext)s")
+    ydl_opts = {
+        **_base_ydl_opts(),
+        "format": "bestaudio[abr<=96]/bestaudio/best",
+        "outtmpl": output_template,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "64",
+            }
+        ],
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        title = info.get("title", "audio")
+
+    audio_files = _find_files(tmp_dir)
+    if not audio_files:
+        _cleanup_dir(tmp_dir)
+        raise ValueError("Audio download produced no file.")
+
+    return tmp_dir, audio_files[0], title
+
+
+def _run_pi_whisper(audio_path: str) -> dict:
+    whisper_bin = os.getenv("WHISPER_CPP_BIN", "/usr/local/bin/whisper-cli")
+    whisper_model = os.getenv("WHISPER_CPP_MODEL", "")
+    if not whisper_model:
+        raise ValueError("WHISPER_CPP_MODEL is not set.")
+    if not os.path.exists(whisper_bin):
+        raise ValueError(f"whisper.cpp binary not found: {whisper_bin}")
+    if not os.path.exists(whisper_model):
+        raise ValueError(f"whisper.cpp model not found: {whisper_model}")
+
+    tmp_dir = tempfile.mkdtemp()
+    wav_path = os.path.join(tmp_dir, "audio.wav")
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        audio_path,
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        wav_path,
+    ]
+    ffmpeg_run = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    if ffmpeg_run.returncode != 0:
+        _cleanup_dir(tmp_dir)
+        raise ValueError(ffmpeg_run.stderr.strip() or "ffmpeg conversion failed.")
+
+    thread_count = os.getenv("WHISPER_THREADS") or str(max(1, (os.cpu_count() or 2) - 1))
+    whisper_cmd = [
+        whisper_bin,
+        "--model",
+        whisper_model,
+        "--file",
+        wav_path,
+        "--threads",
+        thread_count,
+    ]
+    language = os.getenv("WHISPER_LANGUAGE", "").strip()
+    if language:
+        whisper_cmd.extend(["--language", language])
+
+    whisper_run = subprocess.run(whisper_cmd, capture_output=True, text=True)
+    _cleanup_dir(tmp_dir)
+    if whisper_run.returncode != 0:
+        raise ValueError(whisper_run.stderr.strip() or whisper_run.stdout.strip() or "whisper.cpp failed.")
+
+    return _parse_whisper_output(whisper_run.stdout)
 
 
 def _zip_files(files: list[str], archive_path: str) -> str:
@@ -405,32 +519,8 @@ def fetch_audio():
     if not url:
         return jsonify({"error": "No URL provided."}), 400
 
-    tmp_dir = tempfile.mkdtemp()
-    output_template = os.path.join(tmp_dir, "audio.%(ext)s")
-
-    ydl_opts = {
-        **_base_ydl_opts(),
-        "format": "bestaudio[abr<=96]/bestaudio/best",
-        "outtmpl": output_template,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "64",
-            }
-        ],
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get("title", "audio")
-
-        audio_files = _find_files(tmp_dir)
-        if not audio_files:
-            raise ValueError("Audio download produced no file.")
-
-        audio_path = audio_files[0]
+        tmp_dir, audio_path, title = _download_audio_source(url)
         ext = os.path.splitext(audio_path)[1].lstrip(".").lower() or "mp3"
         mime_map = {
             "mp3": "audio/mpeg",
@@ -453,7 +543,26 @@ def fetch_audio():
         response.call_on_close(lambda: _cleanup_dir(tmp_dir))
         return response
     except Exception as e:
+        if "tmp_dir" in locals():
+            _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/transcribe-server", methods=["POST"])
+def transcribe_server():
+    data = request.get_json()
+    url = (data or {}).get("url", "").strip()
+    if not url:
+        return jsonify({"error": "No URL provided."}), 400
+
+    try:
+        tmp_dir, audio_path, title = _download_audio_source(url)
+        result = _run_pi_whisper(audio_path)
         _cleanup_dir(tmp_dir)
+        return jsonify({"title": title, "result": result, "engine": "whisper.cpp"})
+    except Exception as e:
+        if "tmp_dir" in locals():
+            _cleanup_dir(tmp_dir)
         return jsonify({"error": str(e)}), 500
 
 

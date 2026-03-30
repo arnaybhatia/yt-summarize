@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Transcribe + Download Media</title>
-    <meta name="description" content="Run transcription in your browser while a Raspberry Pi server handles media extraction and downloads from YouTube, Instagram, TikTok, and VSCO." />
+    <meta name="description" content="Run transcription, media extraction, and downloads entirely on a Raspberry Pi for YouTube, Instagram, TikTok, and VSCO." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" crossorigin />
@@ -29,7 +29,7 @@
       <div class="model-status-bar" id="model-status-bar">
         <div class="model-status-inner">
           <div class="model-spinner" id="model-spinner"></div>
-          <span class="model-status-text" id="model-status-text">Initialising Whisper…</span>
+          <span class="model-status-text" id="model-status-text">Initialising Raspberry Pi transcription…</span>
           <span class="model-device-badge" id="model-device-badge"></span>
         </div>
         <div class="model-progress-track" id="model-progress-track">
@@ -41,7 +41,7 @@
       <main class="main-content">
         <section class="card input-card">
           <h1 class="card-title">Paste a media link</h1>
-          <p class="card-subtitle">YouTube, Instagram, TikTok, and VSCO. For speed on Raspberry Pi, downloads run on the server and Whisper runs in your browser.</p>
+          <p class="card-subtitle">YouTube, Instagram, TikTok, and VSCO. All transcription and download work runs on the Raspberry Pi.</p>
 
           <div class="input-row">
             <div class="url-input-wrapper">
@@ -113,7 +113,7 @@
               <div class="step-icon-wrap"><span class="step-icon">🎙</span></div>
               <div>
                 <p class="step-label">Transcribing</p>
-                <p class="step-sub">Running Whisper in-browser…</p>
+                <p class="step-sub">Running whisper.cpp on the Raspberry Pi…</p>
               </div>
             </div>
           </div>
@@ -155,7 +155,7 @@
       </main>
 
       <footer class="footer">
-        <p>Whisper runs on your computer for speed · Raspberry Pi handles downloads and extraction · powered by <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">yt-dlp</a></p>
+        <p>Transcription and downloads run on the Raspberry Pi · powered by <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">yt-dlp</a> and <a href="https://github.com/ggml-org/whisper.cpp" target="_blank">whisper.cpp</a></p>
       </footer>
     </div>
 

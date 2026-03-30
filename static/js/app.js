@@ -1,8 +1,6 @@
 /* ─────────────────────────────────────────────────────────────────────────────
-   app.js  ·  Main thread orchestrator
-   Pi-optimized architecture:
-     1. Raspberry Pi handles URL analysis + downloads
-     2. Browser on your computer handles Whisper transcription
+   app.js  ·  Server-driven UI
+   All extraction, downloads, and transcription run on the Raspberry Pi.
 ───────────────────────────────────────────────────────────────────────────── */
 
 const urlInput = document.getElementById('url-input');
@@ -50,69 +48,8 @@ const state = {
   title: '',
   url: '',
   view: 'timestamped',
-  modelReady: false,
-  lowPowerMode: false,
   downloadMeta: null,
 };
-
-function shouldUseLowPowerMode() {
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('pi') === '1') return true;
-
-  const cores = navigator.hardwareConcurrency || 2;
-  const memory = navigator.deviceMemory || 0;
-  return cores <= 4 || (memory && memory <= 4);
-}
-
-state.lowPowerMode = shouldUseLowPowerMode();
-
-const workerUrl = state.lowPowerMode ? '/js/worker.js?pi=1' : '/js/worker.js';
-const worker = new Worker(workerUrl, { type: 'module' });
-
-worker.addEventListener('message', ({ data }) => {
-  switch (data.type) {
-    case 'status':
-      modelStatusText.textContent = data.message;
-      break;
-
-    case 'model-progress': {
-      const p = data.data;
-      if (p.status === 'progress' && p.total) {
-        const pct = Math.round((p.loaded / p.total) * 100);
-        modelProgressFill.style.width = `${pct}%`;
-        modelStatusText.textContent = `Downloading model… ${pct}%`;
-      } else if (p.status === 'ready' || p.status === 'done') {
-        modelProgressFill.style.width = '100%';
-      }
-      break;
-    }
-
-    case 'model-ready': {
-      state.modelReady = true;
-      const device = data.device;
-
-      modelStatusBar.classList.add('ready');
-      modelSpinner.classList.add('done');
-      modelStatusText.textContent = `${data.profile || 'Whisper'} ready`;
-
-      modelDeviceBadge.textContent = device === 'webgpu' ? 'WebGPU' : 'WASM';
-      modelDeviceBadge.className = `model-device-badge visible ${device}`;
-
-      updateTranscribeAvailability(detectPlatform(urlInput.value.trim()));
-      break;
-    }
-
-    case 'result':
-      handleTranscriptResult(data.result);
-      break;
-
-    case 'error':
-      showError(data.message);
-      break;
-  }
-});
-
-worker.postMessage({ type: 'load' });
 
 const platformMeta = {
   youtube: { label: 'YouTube', icon: '▶' },
@@ -120,6 +57,19 @@ const platformMeta = {
   tiktok: { label: 'TikTok', icon: '🎵' },
   vsco: { label: 'VSCO', icon: '🖼' },
 };
+
+initializeServerMode();
+
+function initializeServerMode() {
+  modelStatusBar.classList.add('ready');
+  modelSpinner.classList.add('done');
+  modelStatusText.textContent = 'Server-side mode: transcription runs on the Raspberry Pi via whisper.cpp';
+  modelDeviceBadge.textContent = 'PI';
+  modelDeviceBadge.className = 'model-device-badge visible server';
+  modelProgressFill.style.width = '100%';
+  transcribeBtn.disabled = false;
+  transcribeBtnText.textContent = 'Transcribe on Raspberry Pi';
+}
 
 function detectPlatform(url) {
   const u = url.toLowerCase();
@@ -142,12 +92,6 @@ function renderPlatformBadge(platform) {
 }
 
 function updateTranscribeAvailability(platform) {
-  if (!state.modelReady) {
-    transcribeBtn.disabled = true;
-    transcribeBtnText.textContent = 'Loading model…';
-    return;
-  }
-
   if (platform === 'vsco') {
     transcribeBtn.disabled = true;
     transcribeBtnText.textContent = 'VSCO is download only';
@@ -155,7 +99,7 @@ function updateTranscribeAvailability(platform) {
   }
 
   transcribeBtn.disabled = false;
-  transcribeBtnText.textContent = 'Transcribe on this browser';
+  transcribeBtnText.textContent = 'Transcribe on Raspberry Pi';
 }
 
 urlInput.addEventListener('input', () => {
@@ -175,7 +119,7 @@ function showSection(el) {
 function showError(message) {
   errorText.textContent = message;
   showSection(errorCard);
-  transcribeBtn.disabled = !state.modelReady;
+  updateTranscribeAvailability(detectPlatform(urlInput.value.trim()));
   analyzeBtn.disabled = false;
   downloadSelectedBtn.disabled = false;
 }
@@ -186,27 +130,6 @@ function setStep(active) {
   stepTranscribe.classList.toggle('active', active === 'transcribe');
   stepTranscribe.classList.remove('step-dimmed');
   if (active === 'download') stepTranscribe.classList.add('step-dimmed');
-}
-
-async function decodeAudioTo16kHz(blob) {
-  const arrayBuffer = await blob.arrayBuffer();
-  const ctx = new AudioContext({ sampleRate: 16_000 });
-  const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-  await ctx.close();
-
-  const targetRate = 16_000;
-  if (audioBuffer.sampleRate === targetRate) {
-    return audioBuffer.getChannelData(0).slice();
-  }
-
-  const frames = Math.ceil(audioBuffer.duration * targetRate);
-  const offline = new OfflineAudioContext(1, frames, targetRate);
-  const source = offline.createBufferSource();
-  source.buffer = audioBuffer;
-  source.connect(offline.destination);
-  source.start(0);
-  const resampled = await offline.startRendering();
-  return resampled.getChannelData(0).slice();
 }
 
 function groupOptionsByKind(options) {
@@ -301,7 +224,6 @@ async function doTranscribe() {
     urlInput.focus();
     return;
   }
-  if (!state.modelReady) return;
 
   transcribeBtn.disabled = true;
   analyzeBtn.disabled = true;
@@ -309,7 +231,7 @@ async function doTranscribe() {
   setStep('download');
 
   try {
-    const res = await fetch('/api/fetch-audio', {
+    const res = await fetch('/api/transcribe-server', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
@@ -320,15 +242,11 @@ async function doTranscribe() {
       throw new Error(err.error || `Server error ${res.status}`);
     }
 
-    const title = res.headers.get('X-Video-Title') || 'Transcript';
-    const audioBlob = await res.blob();
-
+    const payload = await res.json();
     setStep('transcribe');
-    const float32 = await decodeAudioTo16kHz(audioBlob);
-
-    state.title = title;
+    state.title = payload.title || 'Transcript';
     state.url = url;
-    worker.postMessage({ type: 'transcribe', audio: float32 }, [float32.buffer]);
+    handleTranscriptResult(payload.result);
   } catch (err) {
     showError(err.message || 'Transcription failed.');
     transcribeBtn.disabled = false;
@@ -361,7 +279,7 @@ function handleTranscriptResult(result) {
   transcriptText.textContent = state.timestamped;
   setView('timestamped');
   showSection(resultsCard);
-  transcribeBtn.disabled = false;
+  updateTranscribeAvailability(detectPlatform(urlInput.value.trim()));
 }
 
 function setView(view) {

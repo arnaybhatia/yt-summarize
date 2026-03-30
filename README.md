@@ -2,60 +2,84 @@
 
 Personal media tool for a Raspberry Pi host.
 
-## Recommended Architecture
+## Current Architecture
 
-For the fastest setup on your hardware:
+Everything runs on the Raspberry Pi:
 
-- Run the Flask app and `yt-dlp` on the Raspberry Pi.
-- Open the UI from your main computer.
-- Let Whisper run in your browser on that computer, not on the Pi.
+- `yt-dlp` extracts media and handles downloads.
+- `whisper.cpp` runs transcription on the Pi.
+- The browser is only the UI.
 
-That keeps the Pi focused on network fetches, file extraction, and downloads while your faster machine handles transcription.
+## Features
 
-## Current Behavior
+- YouTube, Instagram, and TikTok downloads with selectable MP3 and MP4 quality options.
+- VSCO public-page image and video download support.
+- Server-side transcript generation with plain and timestamped output.
 
-- Transcription audio is fetched by the Pi and transcribed in your browser.
-- Download options are fetched from the Pi before downloading.
-- You can choose:
-  - MP3 quality options
-  - MP4 video quality options
-  - Original image/media bundles where applicable
-- VSCO support is handled with a best-effort direct-media extractor for public pages.
+## Dependencies
 
-## Supported Targets
+- Python 3.10+
+- `ffmpeg`
+- `yt-dlp` via `pip`
+- `whisper.cpp` installed on the Pi with a downloaded model
 
-- YouTube
-- Instagram
-- TikTok
-- VSCO public media pages
-
-## Raspberry Pi Setup
+## App Setup
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg
+sudo apt install -y python3 python3-venv ffmpeg git cmake build-essential
+cd /home/strifedeeno/yt-summarize
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+## whisper.cpp Setup
+
+Official whisper.cpp docs state that the project supports Raspberry Pi, that `whisper-cli` can be built with CMake, and that it expects 16-bit WAV input; they also document model sizes from `tiny` through `large`, with `tiny` and `base` being the practical Pi choices. Sources: [whisper.cpp README](https://github.com/ggml-org/whisper.cpp), [Quick start section](https://github.com/ggml-org/whisper.cpp#quick-start).
+
+Example setup:
+
+```bash
+cd /home/strifedeeno
+git clone https://github.com/ggml-org/whisper.cpp.git
+cd whisper.cpp
+cmake -B build
+cmake --build build -j --config Release
+sh ./models/download-ggml-model.sh base.en
+```
+
+## Run The App
+
+Set the whisper.cpp binary and model path before starting:
+
+```bash
+cd /home/strifedeeno/yt-summarize
+source .venv/bin/activate
+export WHISPER_CPP_BIN=/home/strifedeeno/whisper.cpp/build/bin/whisper-cli
+export WHISPER_CPP_MODEL=/home/strifedeeno/whisper.cpp/models/ggml-base.en.bin
+export HOST=0.0.0.0
+export PORT=5000
 python app.py
 ```
 
-Open the app from your computer at:
+Then open:
 
 ```text
 http://<raspberry-pi-ip>:5000/
 ```
 
-## Optional Environment Variables
+## Systemd
 
-```bash
-HOST=0.0.0.0
-PORT=5000
-FLASK_DEBUG=0
-FLASK_THREADED=1
+Add these environment lines to your service:
+
+```ini
+Environment=WHISPER_CPP_BIN=/home/strifedeeno/whisper.cpp/build/bin/whisper-cli
+Environment=WHISPER_CPP_MODEL=/home/strifedeeno/whisper.cpp/models/ggml-base.en.bin
 ```
 
 ## Notes
 
 - `yt-dlp` site support can change over time, especially for Instagram, TikTok, and VSCO.
-- Highest-quality downloads depend on what the source platform exposes for the specific post or video.
+- Highest-quality downloads still depend on what the platform exposes for the specific media item.
+- On a Pi, `base.en` is usually a better tradeoff than larger models for English-only transcription.
