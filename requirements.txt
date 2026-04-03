@@ -1,2 +1,5 @@
 flask
 yt-dlp
+Pillow
+img2pdf
+PyMuPDF

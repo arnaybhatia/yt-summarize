@@ -9,6 +9,23 @@ import zipfile
 
 import yt_dlp
 from flask import Blueprint, jsonify, request, send_file
+from werkzeug.utils import secure_filename
+
+try:
+    from PIL import Image, ImageOps
+except ImportError:
+    Image = None
+    ImageOps = None
+
+try:
+    import img2pdf
+except ImportError:
+    img2pdf = None
+
+try:
+    import fitz
+except ImportError:
+    fitz = None
 
 api = Blueprint("api", __name__)
 
@@ -22,6 +39,19 @@ DIRECT_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 WHISPER_LINE_RE = re.compile(
     r"^\[(\d{2}):(\d{2}):(\d{2}\.\d{3}) --> (\d{2}):(\d{2}):(\d{2}\.\d{3})\]\s*(.*)$"
 )
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+PDF_EXTENSIONS = {"pdf"}
+CONVERTIBLE_IMAGE_FORMATS = {
+    "jpg": "JPEG",
+    "jpeg": "JPEG",
+    "png": "PNG",
+    "webp": "WEBP",
+}
+PDF_TO_IMAGE_FORMATS = {"png": "png", "jpg": "jpeg"}
+GS_PRESET_MAP = {
+    "small": "/ebook",
+    "quality": "/printer",
+}
 
 
 def _cleanup_dir(path: str) -> None:
@@ -39,6 +69,184 @@ def _find_files(directory: str) -> list[str]:
 def _sanitize_filename(value: str, fallback: str) -> str:
     safe = "".join(c for c in (value or fallback) if c.isalnum() or c in " ._-").strip()
     return safe or fallback
+
+
+def _require_dependency(dep, label: str) -> None:
+    if dep is None:
+        raise ValueError(f"{label} is not installed on the server.")
+
+
+def _file_ext(filename: str) -> str:
+    return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+
+def _validate_upload(filename: str, allowed_exts: set[str], label: str) -> str:
+    ext = _file_ext(filename or "")
+    if ext not in allowed_exts:
+        allowed = ", ".join(sorted(allowed_exts))
+        raise ValueError(f"{label} must be one of: {allowed}.")
+    return ext
+
+
+def _safe_upload_name(filename: str, fallback: str) -> str:
+    cleaned = secure_filename(filename or "") or fallback
+    return _sanitize_filename(cleaned, fallback)
+
+
+def _save_uploads(files, allowed_exts: set[str], tmp_dir: str, fallback_prefix: str) -> list[dict]:
+    saved = []
+    for idx, storage in enumerate(files, start=1):
+        if not storage or not (storage.filename or "").strip():
+            continue
+        ext = _validate_upload(storage.filename, allowed_exts, "Uploaded file")
+        safe_name = _safe_upload_name(storage.filename, f"{fallback_prefix}_{idx}.{ext}")
+        path = os.path.join(tmp_dir, safe_name)
+        storage.save(path)
+        if not os.path.getsize(path):
+            raise ValueError("Uploaded file is empty.")
+        saved.append({"path": path, "filename": safe_name, "ext": ext})
+    if not saved:
+        raise ValueError("No files were uploaded.")
+    return saved
+
+
+def _save_single_upload(field_name: str, allowed_exts: set[str], tmp_dir: str, fallback_name: str) -> dict:
+    storage = request.files.get(field_name)
+    if not storage or not (storage.filename or "").strip():
+        raise ValueError("No file was uploaded.")
+    ext = _validate_upload(storage.filename, allowed_exts, "Uploaded file")
+    safe_name = _safe_upload_name(storage.filename, fallback_name)
+    path = os.path.join(tmp_dir, safe_name)
+    storage.save(path)
+    if not os.path.getsize(path):
+        raise ValueError("Uploaded file is empty.")
+    return {"path": path, "filename": safe_name, "ext": ext}
+
+
+def _parse_ordered_uploads(files: list[dict], order_tokens: str) -> list[dict]:
+    if not order_tokens.strip():
+        return files
+
+    ordered_names = [token.strip() for token in order_tokens.split(",") if token.strip()]
+    if len(ordered_names) != len(files):
+        raise ValueError("Image order does not match the uploaded file list.")
+
+    by_name = {item["filename"]: item for item in files}
+    if set(ordered_names) != set(by_name):
+        raise ValueError("Image order includes unknown filenames.")
+
+    return [by_name[name] for name in ordered_names]
+
+
+def _coerce_rgb(image):
+    if image.mode in {"RGB", "L"}:
+        return image.convert("RGB")
+    if image.mode == "RGBA":
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        background.paste(image, mask=image.getchannel("A"))
+        return background
+    return image.convert("RGB")
+
+
+def _convert_image_file(src_path: str, target_format: str, output_path: str) -> None:
+    _require_dependency(Image, "Pillow")
+    with Image.open(src_path) as img:
+        img = ImageOps.exif_transpose(img)
+        save_kwargs = {}
+        if target_format in {"jpg", "jpeg"}:
+            img = _coerce_rgb(img)
+            save_kwargs.update({"format": "JPEG", "quality": 92, "optimize": True})
+        elif target_format == "png":
+            save_kwargs.update({"format": "PNG", "optimize": True})
+        elif target_format == "webp":
+            img = _coerce_rgb(img)
+            save_kwargs.update({"format": "WEBP", "quality": 90, "method": 6})
+        else:
+            raise ValueError("Unsupported target image format.")
+        img.save(output_path, **save_kwargs)
+
+
+def _images_to_pdf(files: list[dict], output_path: str) -> None:
+    _require_dependency(img2pdf, "img2pdf")
+    with open(output_path, "wb") as f:
+        f.write(img2pdf.convert([item["path"] for item in files]))
+
+
+def _pdf_to_images(pdf_path: str, target_format: str, mode: str, page_value: str, tmp_dir: str) -> tuple[str, str]:
+    _require_dependency(fitz, "PyMuPDF")
+    image_ext = target_format.lower()
+    if image_ext not in PDF_TO_IMAGE_FORMATS:
+        raise ValueError("Target format must be png or jpg.")
+
+    doc = fitz.open(pdf_path)
+    try:
+        if doc.page_count == 0:
+            raise ValueError("PDF has no pages.")
+
+        if mode == "single":
+            if not page_value.strip():
+                raise ValueError("Page number is required for single-page export.")
+            try:
+                page_number = int(page_value)
+            except ValueError as exc:
+                raise ValueError("Page number must be an integer.") from exc
+            if page_number < 1 or page_number > doc.page_count:
+                raise ValueError(f"Page number must be between 1 and {doc.page_count}.")
+            page_indexes = [page_number - 1]
+        elif mode == "all":
+            page_indexes = list(range(doc.page_count))
+        else:
+            raise ValueError("Mode must be single or all.")
+
+        created = []
+        for page_idx in page_indexes:
+            page = doc.load_page(page_idx)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            out_name = f"page-{page_idx + 1:03d}.{image_ext}"
+            out_path = os.path.join(tmp_dir, out_name)
+            pix.save(out_path)
+            if image_ext == "jpg":
+                jpg_path = os.path.join(tmp_dir, f"page-{page_idx + 1:03d}.jpg")
+                _convert_image_file(out_path, "jpg", jpg_path)
+                os.remove(out_path)
+                out_path = jpg_path
+            created.append(out_path)
+
+        if len(created) == 1:
+            return created[0], os.path.basename(created[0])
+
+        archive_path = os.path.join(tmp_dir, "pdf-pages.zip")
+        _zip_files(created, archive_path)
+        return archive_path, "pdf-pages.zip"
+    finally:
+        doc.close()
+
+
+def _compress_pdf(pdf_path: str, preset: str, tmp_dir: str) -> tuple[str, str]:
+    gs_preset = GS_PRESET_MAP.get(preset)
+    if not gs_preset:
+        raise ValueError("Compression preset must be small or quality.")
+
+    ghostscript = shutil.which("gs")
+    if not ghostscript:
+        raise ValueError("Ghostscript is not installed on the server.")
+
+    output_path = os.path.join(tmp_dir, "compressed.pdf")
+    cmd = [
+        ghostscript,
+        "-sDEVICE=pdfwrite",
+        "-dCompatibilityLevel=1.4",
+        "-dNOPAUSE",
+        "-dQUIET",
+        "-dBATCH",
+        f"-dPDFSETTINGS={gs_preset}",
+        f"-sOutputFile={output_path}",
+        pdf_path,
+    ]
+    run = subprocess.run(cmd, capture_output=True, text=True)
+    if run.returncode != 0 or not os.path.exists(output_path):
+        raise ValueError(run.stderr.strip() or "PDF compression failed.")
+    return output_path, "compressed.pdf"
 
 
 def _guess_platform(url: str, extractor_key: str | None = None) -> str:
@@ -586,4 +794,86 @@ def download_media():
             tmp_dir, file_path, filename = _download_with_ytdlp(url, option, title)
         return _send_temp_file(tmp_dir, file_path, filename)
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/tools/images-to-pdf", methods=["POST"])
+def tools_images_to_pdf():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        uploads = _save_uploads(request.files.getlist("files"), IMAGE_EXTENSIONS, tmp_dir, "image")
+        ordered = _parse_ordered_uploads(uploads, request.form.get("order", ""))
+        pdf_path = os.path.join(tmp_dir, "images.pdf")
+        _images_to_pdf(ordered, pdf_path)
+        return _send_temp_file(tmp_dir, pdf_path, "images.pdf")
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/tools/image-convert", methods=["POST"])
+def tools_image_convert():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        target_format = request.form.get("target_format", "").strip().lower()
+        if target_format not in CONVERTIBLE_IMAGE_FORMATS:
+            raise ValueError("Target format must be jpg, png, or webp.")
+        uploads = _save_uploads(request.files.getlist("files"), IMAGE_EXTENSIONS, tmp_dir, "image")
+
+        output_paths = []
+        for item in uploads:
+            base = os.path.splitext(item["filename"])[0]
+            out_name = f"{base}.{target_format}"
+            out_path = os.path.join(tmp_dir, out_name)
+            _convert_image_file(item["path"], target_format, out_path)
+            output_paths.append(out_path)
+
+        if len(output_paths) == 1:
+            return _send_temp_file(tmp_dir, output_paths[0], os.path.basename(output_paths[0]))
+
+        archive_path = os.path.join(tmp_dir, "converted-images.zip")
+        _zip_files(output_paths, archive_path)
+        return _send_temp_file(tmp_dir, archive_path, "converted-images.zip")
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/tools/pdf-to-images", methods=["POST"])
+def tools_pdf_to_images():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        upload = _save_single_upload("file", PDF_EXTENSIONS, tmp_dir, "document.pdf")
+        target_format = request.form.get("target_format", "").strip().lower()
+        mode = request.form.get("mode", "").strip().lower()
+        page_value = request.form.get("page", "").strip()
+        output_path, download_name = _pdf_to_images(upload["path"], target_format, mode, page_value, tmp_dir)
+        return _send_temp_file(tmp_dir, output_path, download_name)
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/tools/compress-pdf", methods=["POST"])
+def tools_compress_pdf():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        upload = _save_single_upload("file", PDF_EXTENSIONS, tmp_dir, "document.pdf")
+        preset = request.form.get("preset", "").strip().lower()
+        output_path, download_name = _compress_pdf(upload["path"], preset, tmp_dir)
+        return _send_temp_file(tmp_dir, output_path, download_name)
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
         return jsonify({"error": str(e)}), 500

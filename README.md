@@ -1,6 +1,6 @@
 # yt-summarize
 
-Personal media tool for a Raspberry Pi host.
+Personal media and file-tool app for a Raspberry Pi host.
 
 ## Current Architecture
 
@@ -8,6 +8,7 @@ Everything runs on the Raspberry Pi:
 
 - `yt-dlp` extracts media and handles downloads.
 - `whisper.cpp` runs transcription on the Pi.
+- Pillow, img2pdf, PyMuPDF, and Ghostscript power the image/PDF tools.
 - The browser is only the UI.
 
 ## Features
@@ -15,11 +16,16 @@ Everything runs on the Raspberry Pi:
 - YouTube, Instagram, and TikTok downloads with selectable MP3 and MP4 quality options.
 - VSCO public-page image and video download support.
 - Server-side transcript generation with plain and timestamped output.
+- Image-to-PDF conversion with manual upload ordering.
+- Image format conversion for `jpg/jpeg`, `png`, and `webp`.
+- PDF page export to `png` or `jpg`, either one page or all pages.
+- PDF compression with `smaller files` and `higher quality` presets.
 
 ## Dependencies
 
 - Python 3.10+
 - `ffmpeg`
+- `ghostscript`
 - `yt-dlp` via `pip`
 - `whisper.cpp` installed on the Pi with a downloaded model
 
@@ -27,7 +33,7 @@ Everything runs on the Raspberry Pi:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg git cmake build-essential
+sudo apt install -y python3 python3-venv ffmpeg ghostscript git cmake build-essential
 cd /home/strifedeeno/yt-summarize
 python3 -m venv .venv
 source .venv/bin/activate
@@ -68,6 +74,16 @@ Then open:
 ```text
 http://<raspberry-pi-ip>:5000/
 ```
+
+## Utility Tool Notes
+
+- Accepted image uploads: `jpg`, `jpeg`, `png`, `webp`
+- Accepted document uploads: `pdf`
+- Multi-file image conversions download as a `.zip`
+- PDF page export returns one image for single-page mode and a `.zip` for all-pages mode
+- `Smaller files` compression is more aggressive and may reduce image quality
+- `Higher quality` compression keeps more detail but may reduce file size less
+- If Ghostscript is missing, the PDF compression endpoint returns a dependency error
 
 ## Systemd
 
