@@ -808,11 +808,10 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
     const panel = document.getElementById('preview-panel');
     const navBtns = [];
 
-    // Counter label "p X / Y" shown at the right edge of the nav strip
+    // Counter label "p X / Y" — appended after buttons so margin-left:auto pins it right
     const counter = document.createElement('span');
     counter.className = 'pdf-page-counter';
     counter.textContent = `1 / ${pdf.numPages}`;
-    nav.appendChild(counter);
 
     // IntersectionObserver: highlight nav btn for whichever page is most visible
     const observer = new IntersectionObserver(entries => {
@@ -876,6 +875,7 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
       nav.appendChild(btn);
       navBtns.push(btn);
     }
+    nav.appendChild(counter); // must be last so margin-left:auto pins it to the right
   } catch (err) {
     loading.textContent = `Could not load: ${err.message}`;
     loading.style.display = 'block';
