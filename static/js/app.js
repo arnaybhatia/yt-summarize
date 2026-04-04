@@ -23,6 +23,7 @@ async function ensurePdfjsLoaded() {
 
 // ─── Caches ───────────────────────────────────────────────────────────────────
 const pdfGridCache  = new Map(); // file.name → grid Element (avoids re-rendering)
+const pdfNavCache   = new Map(); // file.name → nav Element
 const imageUrlCache = new Map(); // File object → object URL string
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -534,6 +535,7 @@ function removeImage(i) {
 function removePdf(i) {
   const file = state.uploadedPdfs[i];
   pdfGridCache.delete(file.name);
+  pdfNavCache.delete(file.name);
   delete state.pdfPageModes[file.name];
   delete state.pdfPageSelections[file.name];
   state.uploadedPdfs.splice(i, 1);
@@ -585,7 +587,7 @@ clearImagesBtn.addEventListener('click', () => {
 });
 
 clearPdfsBtn.addEventListener('click', () => {
-  state.uploadedPdfs.forEach(f => pdfGridCache.delete(f.name));
+  state.uploadedPdfs.forEach(f => { pdfGridCache.delete(f.name); pdfNavCache.delete(f.name); });
   state.uploadedPdfs = [];
   state.pdfPageModes = {};
   state.pdfPageSelections = {};
@@ -767,15 +769,20 @@ function buildPdfPagesSection() {
     fileHdr.appendChild(fname); fileHdr.appendChild(toggle);
     wrap.appendChild(fileHdr);
 
-    // Page grid — use cache so we don't re-render PDF.js on every state change
+    // Page grid + nav — use cache so we don't re-render PDF.js on every state change
     let grid = pdfGridCache.get(file.name);
+    let nav  = pdfNavCache.get(file.name);
     if (!grid) {
+      nav  = document.createElement('div');
+      nav.className = 'pdf-page-nav';
       grid = document.createElement('div');
       grid.className = 'preview-page-grid';
       pdfGridCache.set(file.name, grid);
-      loadPdfPagesIntoGrid(file, grid);
+      pdfNavCache.set(file.name, nav);
+      loadPdfPagesIntoGrid(file, grid, nav);
     }
 
+    wrap.appendChild(nav);
     wrap.appendChild(grid);
     section.appendChild(wrap);
   });
@@ -783,7 +790,7 @@ function buildPdfPagesSection() {
   return section;
 }
 
-async function loadPdfPagesIntoGrid(file, grid) {
+async function loadPdfPagesIntoGrid(file, grid, nav) {
   const loading = document.createElement('p');
   loading.className = 'page-loading-msg';
   loading.textContent = 'Loading pages…';
@@ -798,6 +805,18 @@ async function loadPdfPagesIntoGrid(file, grid) {
     loading.remove();
 
     const sel = state.pdfPageSelections[file.name];
+    const scrollRoot = document.getElementById('preview-panel');
+    const navBtns = [];
+
+    // IntersectionObserver: highlight nav btn for whichever page is most visible
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        const idx = parseInt(entry.target.dataset.page, 10) - 1;
+        navBtns.forEach((b, j) => b.classList.toggle('active', j === idx));
+        navBtns[idx]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      });
+    }, { root: scrollRoot, threshold: 0.4 });
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page     = await pdf.getPage(i);
@@ -828,6 +847,18 @@ async function loadPdfPagesIntoGrid(file, grid) {
       });
 
       grid.appendChild(thumb);
+      observer.observe(thumb);
+
+      // Nav button
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `pdf-page-nav-btn${i === 1 ? ' active' : ''}`;
+      btn.textContent = i;
+      btn.addEventListener('click', () =>
+        thumb.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      );
+      nav.appendChild(btn);
+      navBtns.push(btn);
     }
   } catch (err) {
     loading.textContent = `Could not load: ${err.message}`;

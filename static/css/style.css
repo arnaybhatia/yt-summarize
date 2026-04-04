@@ -560,6 +560,49 @@ body {
 
 .page-thumb.selected .page-thumb-check { display: flex; }
 
+/* ── PDF PAGE NAV STRIP ────────────────────────────────────── */
+.pdf-page-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.pdf-page-nav::-webkit-scrollbar { height: 4px; }
+.pdf-page-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+.pdf-page-nav-btn {
+  flex-shrink: 0;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.pdf-page-nav-btn:hover { background: var(--surface-hover); color: var(--text-primary); }
+.pdf-page-nav-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 .page-loading-msg { font-size: 0.78rem; color: var(--text-muted); padding: 20px 0; text-align: center; width: 100%; }
 
 /* ── JOBS PANEL ─────────────────────────────────────────── */
