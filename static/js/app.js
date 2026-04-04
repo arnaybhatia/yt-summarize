@@ -854,9 +854,13 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
       btn.type = 'button';
       btn.className = `pdf-page-nav-btn${i === 1 ? ' active' : ''}`;
       btn.textContent = i;
-      btn.addEventListener('click', () =>
-        thumb.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      );
+      btn.addEventListener('click', () => {
+        const panel = document.getElementById('preview-panel');
+        const offset = thumb.getBoundingClientRect().top
+                     - panel.getBoundingClientRect().top
+                     + panel.scrollTop;
+        panel.scrollTo({ top: offset - 8, behavior: 'smooth' });
+      });
       nav.appendChild(btn);
       navBtns.push(btn);
     }
