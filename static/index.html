@@ -10,201 +10,194 @@
     <link rel="stylesheet" href="/css/style.css" />
   </head>
   <body>
-    <div class="app-wrapper">
 
-      <!-- Header -->
-      <header class="header">
-        <div class="logo">
-          <span class="logo-icon">⚡</span>
-          <span class="logo-text">Media + File Tools</span>
-        </div>
-      </header>
+    <div class="app-shell">
 
-      <!-- Model status bar -->
-      <div class="model-status-bar" id="model-status-bar" hidden>
-        <div class="model-spinner" id="model-spinner"></div>
-        <span class="model-status-text" id="model-status-text">Loading transcription model…</span>
-        <span class="model-device-badge" id="model-device-badge"></span>
-        <div class="model-progress-track">
-          <div class="model-progress-fill" id="model-progress-fill"></div>
-        </div>
-      </div>
+      <!-- ══════════════════════════════════════════════════
+           LEFT PANEL — controls, file groups, jobs
+           ══════════════════════════════════════════════════ -->
+      <div class="left-panel">
 
-      <!-- URL Zone -->
-      <section class="card" id="url-zone">
-        <div class="url-input-wrapper">
-          <span class="input-icon" id="platform-icon">🔗</span>
-          <input
-            type="url"
-            id="url-input"
-            class="url-input"
-            placeholder="Paste a YouTube, Instagram, TikTok, or VSCO link…"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <span class="url-input-spinner" id="url-analyze-spinner" aria-hidden="true"></span>
-          <span class="platform-badge" id="platform-badge"></span>
+        <header class="header">
+          <div class="logo">
+            <span class="logo-icon">⚡</span>
+            <span class="logo-text">Media + File Tools</span>
+          </div>
+        </header>
+
+        <!-- Model status bar -->
+        <div class="model-status-bar" id="model-status-bar" hidden>
+          <div class="model-spinner" id="model-spinner"></div>
+          <span class="model-status-text" id="model-status-text">Loading transcription model…</span>
+          <span class="model-device-badge" id="model-device-badge"></span>
+          <div class="model-progress-track">
+            <div class="model-progress-fill" id="model-progress-fill"></div>
+          </div>
         </div>
 
-        <!-- Auto-revealed after URL is analyzed -->
-        <div id="url-options" hidden>
-          <hr class="card-divider" />
-          <div class="results-header">
-            <h2 class="video-title" id="url-media-title"></h2>
-            <span class="platform-badge visible" id="download-platform-badge"></span>
+        <!-- URL zone -->
+        <section class="card" id="url-zone">
+          <div class="url-input-wrapper">
+            <span class="input-icon" id="platform-icon">🔗</span>
+            <input
+              type="url" id="url-input" class="url-input"
+              placeholder="Paste a YouTube, Instagram, TikTok, or VSCO link…"
+              autocomplete="off" spellcheck="false"
+            />
+            <span class="url-input-spinner" id="url-analyze-spinner" aria-hidden="true"></span>
+            <span class="platform-badge" id="platform-badge"></span>
           </div>
-          <div class="download-grid">
-            <label class="field">
-              <span class="field-label">Type</span>
-              <select id="download-kind" class="select-input"></select>
-            </label>
-            <label class="field">
-              <span class="field-label">Quality</span>
-              <select id="download-option" class="select-input"></select>
-            </label>
-          </div>
-          <div class="primary-actions">
-            <button class="btn btn-secondary" id="download-btn" disabled>⬇ Download</button>
-            <button class="btn btn-primary" id="transcribe-btn" disabled>
-              <span id="transcribe-btn-text">Transcribe</span>
-            </button>
-          </div>
-          <div class="video-progress" id="download-progress" hidden>
-            <div class="progress-bar-track">
-              <div class="progress-bar-fill"></div>
+
+          <!-- Auto-revealed after URL analysis -->
+          <div id="url-options" hidden>
+            <hr class="card-divider" />
+            <div class="results-header">
+              <h2 class="video-title" id="url-media-title"></h2>
+              <span class="platform-badge visible" id="download-platform-badge"></span>
             </div>
-            <p class="progress-label" id="download-progress-label">Preparing…</p>
+            <div class="download-grid">
+              <label class="field">
+                <span class="field-label">Type</span>
+                <select id="download-kind" class="select-input"></select>
+              </label>
+              <label class="field">
+                <span class="field-label">Quality</span>
+                <select id="download-option" class="select-input"></select>
+              </label>
+            </div>
+            <div class="primary-actions">
+              <button class="btn btn-secondary" id="download-btn" disabled>⬇ Download</button>
+              <button class="btn btn-primary" id="transcribe-btn" disabled>
+                <span id="transcribe-btn-text">Transcribe</span>
+              </button>
+            </div>
+            <div class="video-progress" id="download-progress" hidden>
+              <div class="progress-bar-track"><div class="progress-bar-fill"></div></div>
+              <p class="progress-label" id="download-progress-label">Preparing…</p>
+            </div>
           </div>
+        </section>
+
+        <!-- Mobile-only: add files button (desktop uses right-panel drop zone) -->
+        <button type="button" class="btn btn-secondary mobile-add-files" id="mobile-add-files-btn">
+          📁 Add images or PDFs
+        </button>
+
+        <!-- File action groups (shown when files uploaded) -->
+        <div id="file-actions-section" hidden>
+
+          <!-- Images group -->
+          <section class="card action-group" id="images-group" hidden>
+            <div class="group-header">
+              <h2 class="card-title" id="images-group-title">Images</h2>
+              <button type="button" class="btn btn-ghost btn-sm" id="clear-images-btn">Clear</button>
+            </div>
+            <div class="group-file-list" id="images-file-list"></div>
+            <div class="action-choice-row">
+              <button type="button" class="action-choice-btn active" id="img-action-convert">Convert</button>
+              <button type="button" class="action-choice-btn" id="img-action-topdf">→ PDF</button>
+            </div>
+            <div id="img-convert-opts">
+              <label class="field">
+                <span class="field-label">Output format</span>
+                <select class="select-input" id="img-convert-format">
+                  <option value="jpg">JPG</option>
+                  <option value="png">PNG</option>
+                  <option value="webp">WebP</option>
+                </select>
+              </label>
+            </div>
+            <div class="action-bar">
+              <button type="button" class="btn btn-primary btn-full" id="images-submit-btn">Process images</button>
+            </div>
+          </section>
+
+          <!-- PDFs group -->
+          <section class="card action-group" id="pdfs-group" hidden>
+            <div class="group-header">
+              <h2 class="card-title" id="pdfs-group-title">PDFs</h2>
+              <button type="button" class="btn btn-ghost btn-sm" id="clear-pdfs-btn">Clear</button>
+            </div>
+            <div class="group-file-list" id="pdfs-file-list"></div>
+            <div class="action-choice-row">
+              <button type="button" class="action-choice-btn active" id="pdf-action-compress">Compress</button>
+              <button type="button" class="action-choice-btn" id="pdf-action-toimages">→ Images</button>
+            </div>
+            <div id="pdf-compress-opts">
+              <label class="field">
+                <span class="field-label">Preset</span>
+                <select class="select-input" id="pdf-compress-preset">
+                  <option value="small">Smaller files</option>
+                  <option value="quality">Higher quality</option>
+                </select>
+              </label>
+            </div>
+            <div id="pdf-to-images-opts" hidden>
+              <label class="field">
+                <span class="field-label">Output format</span>
+                <select class="select-input" id="pdf-export-format">
+                  <option value="png">PNG</option>
+                  <option value="jpg">JPG</option>
+                </select>
+              </label>
+            </div>
+            <div class="action-bar">
+              <button type="button" class="btn btn-primary btn-full" id="pdfs-submit-btn">Process PDFs</button>
+            </div>
+          </section>
+
         </div>
-      </section>
 
-      <!-- Or divider -->
-      <div class="or-divider"><span>or</span></div>
+        <!-- Jobs panel -->
+        <section id="jobs-section" hidden>
+          <p class="jobs-heading">Jobs</p>
+          <div id="jobs-list"></div>
+        </section>
 
-      <!-- Drop Zone -->
-      <section
-        class="card drop-zone"
-        id="drop-zone"
-        role="button"
-        tabindex="0"
-        aria-label="Upload images or PDFs"
-      >
-        <input
-          type="file"
-          id="file-input"
-          accept=".jpg,.jpeg,.png,.webp,.pdf"
-          multiple
-          hidden
-        />
-        <div id="drop-prompt">
+        <footer class="footer">
+          <p>
+            Raspberry Pi ·
+            <a href="https://github.com/yt-dlp/yt-dlp" target="_blank" rel="noopener">yt-dlp</a> ·
+            <a href="https://github.com/ggml-org/whisper.cpp" target="_blank" rel="noopener">whisper.cpp</a> ·
+            Pillow · PyMuPDF · Ghostscript
+          </p>
+        </footer>
+
+      </div><!-- /left-panel -->
+
+      <!-- ══════════════════════════════════════════════════
+           RIGHT PANEL — large preview (desktop sticky,
+                         mobile full-screen overlay)
+           ══════════════════════════════════════════════════ -->
+      <div class="right-panel" id="preview-panel">
+
+        <!-- Mobile header with close button -->
+        <div class="preview-panel-header">
+          <p class="preview-panel-title">Preview</p>
+          <button class="btn btn-ghost btn-sm" id="preview-close-btn">✕ Close</button>
+        </div>
+
+        <!-- Empty state = desktop drop zone -->
+        <div class="preview-empty-state" id="preview-empty-state">
           <span class="drop-icon">📁</span>
-          <p class="drop-text">Drop images or PDFs here</p>
-          <p class="drop-subtext">JPG · PNG · WebP · PDF — pick one or many</p>
+          <p class="drop-text">Drop files here</p>
+          <p class="drop-subtext">JPG · PNG · WebP · PDF — one or many</p>
           <button type="button" class="btn btn-secondary" id="browse-btn">Browse files</button>
         </div>
-      </section>
 
-      <!-- File Action Groups (shown when files are uploaded) -->
-      <div id="file-actions-section" hidden>
+        <!-- Preview content (populated by JS) -->
+        <div id="preview-content" hidden></div>
 
-        <!-- Images Group -->
-        <section class="card action-group" id="images-group" hidden>
-          <div class="group-header">
-            <h2 class="card-title" id="images-group-title">Images</h2>
-            <button type="button" class="btn btn-ghost btn-sm" id="clear-images-btn">Clear</button>
-          </div>
-          <div class="group-file-list" id="images-file-list"></div>
-          <div class="action-choice-row">
-            <button type="button" class="action-choice-btn active" id="img-action-convert">
-              Convert format
-            </button>
-            <button type="button" class="action-choice-btn" id="img-action-topdf">
-              Combine into PDF
-            </button>
-          </div>
-          <!-- Convert options -->
-          <div id="img-convert-opts">
-            <label class="field">
-              <span class="field-label">Output format</span>
-              <select class="select-input" id="img-convert-format">
-                <option value="jpg">JPG</option>
-                <option value="png">PNG</option>
-                <option value="webp">WebP</option>
-              </select>
-            </label>
-          </div>
-          <!-- Combine into PDF: drag-to-reorder thumbnails -->
-          <div id="img-to-pdf-opts" hidden>
-            <div class="field">
-              <span class="field-label">Page order — drag to rearrange</span>
-              <div class="thumb-grid" id="img-thumb-grid"></div>
-            </div>
-          </div>
-          <div class="action-bar">
-            <button type="button" class="btn btn-primary" id="images-submit-btn">Process images</button>
-          </div>
-        </section>
+      </div><!-- /right-panel -->
 
-        <!-- PDFs Group -->
-        <section class="card action-group" id="pdfs-group" hidden>
-          <div class="group-header">
-            <h2 class="card-title" id="pdfs-group-title">PDFs</h2>
-            <button type="button" class="btn btn-ghost btn-sm" id="clear-pdfs-btn">Clear</button>
-          </div>
-          <div class="group-file-list" id="pdfs-file-list"></div>
-          <div class="action-choice-row">
-            <button type="button" class="action-choice-btn active" id="pdf-action-compress">
-              Compress
-            </button>
-            <button type="button" class="action-choice-btn" id="pdf-action-toimages">
-              Export as images
-            </button>
-          </div>
-          <!-- Compress options -->
-          <div id="pdf-compress-opts">
-            <label class="field">
-              <span class="field-label">Preset</span>
-              <select class="select-input" id="pdf-compress-preset">
-                <option value="small">Smaller files</option>
-                <option value="quality">Higher quality</option>
-              </select>
-            </label>
-          </div>
-          <!-- Export as images options -->
-          <div id="pdf-to-images-opts" hidden>
-            <label class="field">
-              <span class="field-label">Output format</span>
-              <select class="select-input" id="pdf-export-format">
-                <option value="png">PNG</option>
-                <option value="jpg">JPG</option>
-              </select>
-            </label>
-            <!-- Per-file page pickers rendered dynamically -->
-            <div id="per-file-page-pickers"></div>
-          </div>
-          <div class="action-bar">
-            <button type="button" class="btn btn-primary" id="pdfs-submit-btn">Process PDFs</button>
-          </div>
-        </section>
+    </div><!-- /app-shell -->
 
-      </div>
+    <!-- Mobile FAB — opens preview overlay -->
+    <button class="mobile-preview-fab" id="mobile-preview-fab" hidden>View preview</button>
 
-      <!-- Jobs Panel -->
-      <section id="jobs-section" hidden>
-        <p class="jobs-heading">Jobs</p>
-        <div id="jobs-list"></div>
-      </section>
+    <!-- Single file input shared by both drop zones -->
+    <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.webp,.pdf" multiple hidden />
 
-      <footer class="footer">
-        <p>
-          Runs on Raspberry Pi ·
-          <a href="https://github.com/yt-dlp/yt-dlp" target="_blank" rel="noopener">yt-dlp</a> ·
-          <a href="https://github.com/ggml-org/whisper.cpp" target="_blank" rel="noopener">whisper.cpp</a> ·
-          Pillow · PyMuPDF · Ghostscript
-        </p>
-      </footer>
-
-    </div>
     <script type="module" src="/js/app.js"></script>
   </body>
 </html>
