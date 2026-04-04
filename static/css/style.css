@@ -36,6 +36,9 @@
    ============================================================ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Ensure [hidden] always wins regardless of display rules on other selectors */
+[hidden] { display: none !important; }
+
 html { font-size: 16px; }
 
 body {
@@ -754,9 +757,9 @@ body {
 
 .page-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
-  gap: 8px;
-  max-height: 260px;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  max-height: 400px;
   overflow-y: auto;
 }
 
@@ -980,7 +983,7 @@ body {
   .primary-actions { flex-direction: column; }
   .action-choice-row { flex-direction: column; }
   .drop-zone { padding: 28px 16px !important; }
-  .page-grid { grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); }
+  .page-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
   .job-actions { flex-direction: column; }
 }
 

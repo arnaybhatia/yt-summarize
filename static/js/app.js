@@ -912,7 +912,7 @@ async function loadPdfPageGrid(picker, file) {
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page     = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 0.3 });
+      const viewport = page.getViewport({ scale: 0.55 });
       const canvas   = document.createElement('canvas');
       canvas.width   = viewport.width;
       canvas.height  = viewport.height;
