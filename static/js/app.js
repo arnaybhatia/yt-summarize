@@ -801,7 +801,7 @@ async function loadPdfPagesIntoGrid(file, grid) {
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page     = await pdf.getPage(i);
-      const viewport = page.getViewport({ scale: 0.7 });
+      const viewport = page.getViewport({ scale: 1.5 });
       const canvas   = document.createElement('canvas');
       canvas.width   = viewport.width;
       canvas.height  = viewport.height;
@@ -810,7 +810,6 @@ async function loadPdfPagesIntoGrid(file, grid) {
       const thumb = document.createElement('div');
       thumb.className = `page-thumb${sel?.has(i) ? ' selected' : ''}`;
       thumb.dataset.page = i;
-      thumb.style.position = 'relative';
 
       const check = document.createElement('span');
       check.className = 'page-thumb-check';

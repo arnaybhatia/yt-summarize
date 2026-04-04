@@ -160,11 +160,11 @@ body {
   letter-spacing: 0.07em;
 }
 
-/* Large PDF page grid */
+/* Full-width vertical PDF page strip */
 .preview-page-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
 /* Large image thumb grid */
@@ -222,13 +222,30 @@ body {
   font-family: var(--font);
 }
 
-/* PDF page thumbnails */
-.preview-page-grid .page-thumb { position: relative; }
+/* Full-width PDF pages — vertical scroll strip */
+.preview-page-grid .page-thumb {
+  position: relative;
+  width: 100%;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+}
+.preview-page-grid .page-thumb:first-child { border-radius: var(--radius-sm) var(--radius-sm) 0 0; border-top: 1.5px solid var(--border); }
+.preview-page-grid .page-thumb:last-child  { border-radius: 0 0 var(--radius-sm) var(--radius-sm); border-bottom: 1.5px solid var(--border); }
 .preview-page-grid .page-thumb canvas { width: 100%; height: auto; display: block; }
 .preview-page-grid .page-thumb-label {
-  padding: 5px 6px;
-  font-size: 0.72rem;
-  font-weight: 600;
+  /* overlay pill at bottom-right */
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  padding: 3px 8px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  border-radius: 99px;
+  pointer-events: none;
   text-align: center;
   color: var(--text-secondary);
   background: var(--surface);
@@ -540,7 +557,7 @@ body {
 
 .page-thumb.selected .page-thumb-check { display: flex; }
 
-.page-loading-msg { font-size: 0.78rem; color: var(--text-muted); padding: 20px 0; text-align: center; grid-column: 1 / -1; }
+.page-loading-msg { font-size: 0.78rem; color: var(--text-muted); padding: 20px 0; text-align: center; width: 100%; }
 
 /* ── JOBS PANEL ─────────────────────────────────────────── */
 #jobs-section { display: flex; flex-direction: column; gap: 8px; }
@@ -688,7 +705,7 @@ body {
   .preview-empty-state { min-height: 50vh; margin: 14px; }
 
   #preview-content { padding: 16px; gap: 20px; }
-  .preview-page-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .preview-page-grid { gap: 0; }
   .preview-thumb-item { width: 130px; }
   .preview-thumb-item img { height: 96px; }
   .preview-file-cards { grid-template-columns: 1fr; }
