@@ -757,6 +757,7 @@ function buildPdfPagesSection() {
       allBtn.classList.add('active');
       selBtn.classList.remove('active');
       wrap.querySelectorAll('.page-thumb').forEach(t => t.classList.remove('selected'));
+      wrap.querySelectorAll('.pdf-page-nav-btn').forEach(t => t.classList.remove('selected'));
     });
 
     selBtn.addEventListener('click', () => {
@@ -808,6 +809,21 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
     const panel = document.getElementById('preview-panel');
     const navBtns = [];
 
+    const syncSelectedState = (pageNumber, isSelected) => {
+      const thumb = grid.querySelector(`.page-thumb[data-page="${pageNumber}"]`);
+      const btn = navBtns[pageNumber - 1];
+      thumb?.classList.toggle('selected', isSelected);
+      btn?.classList.toggle('selected', isSelected);
+    };
+
+    const togglePageSelection = pageNumber => {
+      if (state.pdfPageModes[file.name] !== 'select') return;
+      const isSelected = sel.has(pageNumber);
+      if (isSelected) sel.delete(pageNumber);
+      else sel.add(pageNumber);
+      syncSelectedState(pageNumber, !isSelected);
+    };
+
     // Counter label "p X / Y" — appended after buttons so margin-left:auto pins it right
     const counter = document.createElement('span');
     counter.className = 'pdf-page-counter';
@@ -851,11 +867,7 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
 
       thumb.appendChild(canvas); thumb.appendChild(check); thumb.appendChild(lbl);
 
-      thumb.addEventListener('click', () => {
-        if (state.pdfPageModes[file.name] !== 'select') return;
-        if (sel.has(i)) { sel.delete(i); thumb.classList.remove('selected'); }
-        else            { sel.add(i);    thumb.classList.add('selected'); }
-      });
+      thumb.addEventListener('click', () => togglePageSelection(i));
 
       grid.appendChild(thumb);
       observer.observe(thumb);
@@ -863,7 +875,7 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
       // Nav button
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = `pdf-page-nav-btn${i === 1 ? ' active' : ''}`;
+      btn.className = `pdf-page-nav-btn${i === 1 ? ' active' : ''}${sel?.has(i) ? ' selected' : ''}`;
       btn.textContent = i;
       btn.addEventListener('click', () => {
         const panel = document.getElementById('preview-panel');
@@ -871,6 +883,7 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
                      - panel.getBoundingClientRect().top
                      + panel.scrollTop;
         panel.scrollTo({ top: offset - 8, behavior: 'smooth' });
+        if (state.pdfPageModes[file.name] === 'select') togglePageSelection(i);
       });
       nav.appendChild(btn);
       navBtns.push(btn);
