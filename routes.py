@@ -624,6 +624,19 @@ def _run_pi_whisper(audio_path: str) -> dict:
     return _parse_whisper_output(whisper_run.stdout)
 
 
+def _whisper_status() -> dict:
+    whisper_bin = os.getenv("WHISPER_CPP_BIN", "/usr/local/bin/whisper-cli")
+    whisper_model = os.getenv("WHISPER_CPP_MODEL", "")
+
+    if not whisper_model:
+        return {"ready": False, "status": "WHISPER_CPP_MODEL is not set.", "device": "PI"}
+    if not os.path.exists(whisper_bin):
+        return {"ready": False, "status": f"whisper.cpp binary not found: {whisper_bin}", "device": "PI"}
+    if not os.path.exists(whisper_model):
+        return {"ready": False, "status": f"whisper.cpp model not found: {whisper_model}", "device": "PI"}
+    return {"ready": True, "status": "Transcription ready", "device": "PI"}
+
+
 def _zip_files(files: list[str], archive_path: str) -> str:
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for file_path in files:
@@ -720,6 +733,13 @@ def _send_temp_file(tmp_dir: str, path: str, download_name: str):
     return response
 
 
+def _request_value(name: str, default=""):
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        return data.get(name, default)
+    return request.form.get(name, default)
+
+
 @api.route("/api/media-options", methods=["POST"])
 def media_options():
     data = request.get_json()
@@ -731,6 +751,11 @@ def media_options():
         return jsonify(_build_media_options(url))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/model-status", methods=["GET"])
+def model_status():
+    return jsonify(_whisper_status())
 
 
 @api.route("/api/fetch-audio", methods=["POST"])
@@ -771,8 +796,7 @@ def fetch_audio():
 
 @api.route("/api/transcribe-server", methods=["POST"])
 def transcribe_server():
-    data = request.get_json()
-    url = (data or {}).get("url", "").strip()
+    url = str(_request_value("url", "")).strip()
     if not url:
         return jsonify({"error": "No URL provided."}), 400
 
@@ -789,10 +813,24 @@ def transcribe_server():
 
 @api.route("/api/download-media", methods=["POST"])
 def download_media():
-    data = request.get_json() or {}
-    url = data.get("url", "").strip()
-    option = data.get("option") or {}
-    title = data.get("title", "download")
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        url = str(data.get("url", "")).strip()
+        option = data.get("option") or {}
+        title = str(data.get("title", "download"))
+    else:
+        url = str(request.form.get("url", "")).strip()
+        option_value = str(request.form.get("value", "")).strip()
+        option_kind = str(request.form.get("kind", "")).strip().lower()
+        if url and option_value:
+            meta = _build_media_options(url)
+            option = next((item for item in meta.get("options", []) if item.get("id") == option_value), {})
+            if option_kind and option and option.get("kind") != option_kind:
+                option = {}
+            title = str(meta.get("title") or "download")
+        else:
+            option = {}
+            title = "download"
 
     if not url:
         return jsonify({"error": "No URL provided."}), 400

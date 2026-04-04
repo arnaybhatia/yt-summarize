@@ -114,6 +114,21 @@ function formatBytes(b) {
   return `${(b / 1048576).toFixed(1)} MB`;
 }
 
+function formatTimecode(seconds) {
+  const totalMs = Math.max(0, Math.round((Number(seconds) || 0) * 1000));
+  const hours = Math.floor(totalMs / 3600000);
+  const minutes = Math.floor((totalMs % 3600000) / 60000);
+  const secs = ((totalMs % 60000) / 1000).toFixed(3).padStart(6, '0');
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${secs}`;
+}
+
+function formatTimestampedTranscript(chunks) {
+  return chunks.map(chunk => {
+    const [start, end] = chunk.timestamp || [0, 0];
+    return `[${formatTimecode(start)} --> ${formatTimecode(end)}] ${chunk.text || ''}`.trim();
+  }).join('\n');
+}
+
 function looksLikeUrl(s) { return /^https?:\/\/.{6,}/.test(s); }
 
 function escHtml(s) {
@@ -232,10 +247,10 @@ function renderDownloadMeta(meta, url) {
   else    { dlPlatformBadge.className = 'platform-badge'; }
   const kinds = [...new Set(meta.options.map(o => o.kind))];
   downloadKind.innerHTML = kinds.map(k =>
-    `<option value="${k}">${k==='mp4'?'Video (MP4)':k==='mp3'?'Audio (MP3)':k}</option>`
+    `<option value="${k}">${k === 'video' ? 'Video' : k === 'audio' ? 'Audio' : k === 'image' ? 'Image' : k === 'mixed' ? 'Post media' : k}</option>`
   ).join('');
   updateQualityOptions();
-  downloadKind.addEventListener('change', updateQualityOptions);
+  downloadKind.onchange = updateQualityOptions;
   urlOptions.hidden = false;
   downloadBtn.disabled = false;
   if (state.modelReady) transcribeBtn.disabled = false;
@@ -244,7 +259,7 @@ function renderDownloadMeta(meta, url) {
 function updateQualityOptions() {
   if (!state.downloadMeta) return;
   const opts = state.downloadMeta.options.filter(o => o.kind === downloadKind.value);
-  downloadOption.innerHTML = opts.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+  downloadOption.innerHTML = opts.map(o => `<option value="${o.id}">${o.label}</option>`).join('');
 }
 
 // ─── Network request helper ───────────────────────────────────────────────────
@@ -421,9 +436,10 @@ async function runTranscribeJob(jobId, url) {
     updateJob(jobId, { step: 'Transcribing on Pi…' });
     if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error||`Server error ${res.status}`); }
     const data = await res.json();
+    const result = data.result || {};
     updateJob(jobId, {
       status: 'done', step: null,
-      transcript: { plain: data.plain||'', timestamped: data.timestamped||'' },
+      transcript: { plain: result.text || '', timestamped: formatTimestampedTranscript(result.chunks || []) },
       transcriptView: 'timestamped',
     });
   } catch (err) {
