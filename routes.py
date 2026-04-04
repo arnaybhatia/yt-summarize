@@ -195,8 +195,21 @@ def _pdf_to_images(pdf_path: str, target_format: str, mode: str, page_value: str
             page_indexes = [page_number - 1]
         elif mode == "all":
             page_indexes = list(range(doc.page_count))
+        elif mode == "pages":
+            if not page_value.strip():
+                raise ValueError("Page list is required for pages export.")
+            try:
+                page_numbers = [int(p.strip()) for p in page_value.split(",") if p.strip()]
+            except ValueError as exc:
+                raise ValueError("Page list must be comma-separated integers.") from exc
+            if not page_numbers:
+                raise ValueError("Page list is empty.")
+            invalid = [n for n in page_numbers if n < 1 or n > doc.page_count]
+            if invalid:
+                raise ValueError(f"Invalid page numbers: {invalid}. PDF has {doc.page_count} pages.")
+            page_indexes = [n - 1 for n in page_numbers]
         else:
-            raise ValueError("Mode must be single or all.")
+            raise ValueError("Mode must be 'single', 'all', or 'pages'.")
 
         created = []
         for page_idx in page_indexes:
