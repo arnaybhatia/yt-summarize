@@ -603,6 +603,17 @@ body {
   border-color: var(--accent);
 }
 
+.pdf-page-counter {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
 .page-loading-msg { font-size: 0.78rem; color: var(--text-muted); padding: 20px 0; text-align: center; width: 100%; }
 
 /* ── JOBS PANEL ─────────────────────────────────────────── */

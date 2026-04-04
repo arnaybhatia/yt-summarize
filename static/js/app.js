@@ -805,8 +805,14 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
     loading.remove();
 
     const sel = state.pdfPageSelections[file.name];
-    const scrollRoot = document.getElementById('preview-panel');
+    const panel = document.getElementById('preview-panel');
     const navBtns = [];
+
+    // Counter label "p X / Y" shown at the right edge of the nav strip
+    const counter = document.createElement('span');
+    counter.className = 'pdf-page-counter';
+    counter.textContent = `1 / ${pdf.numPages}`;
+    nav.appendChild(counter);
 
     // IntersectionObserver: highlight nav btn for whichever page is most visible
     const observer = new IntersectionObserver(entries => {
@@ -814,9 +820,15 @@ async function loadPdfPagesIntoGrid(file, grid, nav) {
         if (!entry.isIntersecting) return;
         const idx = parseInt(entry.target.dataset.page, 10) - 1;
         navBtns.forEach((b, j) => b.classList.toggle('active', j === idx));
-        navBtns[idx]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        counter.textContent = `${idx + 1} / ${pdf.numPages}`;
+        // scroll the active nav button into view within the strip
+        const activeBtn = navBtns[idx];
+        if (activeBtn) {
+          const stripOffset = activeBtn.offsetLeft - nav.offsetWidth / 2 + activeBtn.offsetWidth / 2;
+          nav.scrollTo({ left: stripOffset, behavior: 'smooth' });
+        }
       });
-    }, { root: scrollRoot, threshold: 0.4 });
+    }, { root: panel, threshold: 0.4 });
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page     = await pdf.getPage(i);
