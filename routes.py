@@ -392,6 +392,110 @@ def _entry_ext(entry: dict) -> str:
     return (entry.get("ext") or "").lower()
 
 
+def _normalize_entries(info: dict) -> list[dict]:
+    entries = info.get("entries") or []
+    if isinstance(entries, list):
+        return [entry for entry in entries if entry]
+    return [entry for entry in entries if entry]
+
+
+def _infer_media_type(item: dict) -> str | None:
+    ext = _entry_ext(item)
+    if ext in DIRECT_IMAGE_EXTENSIONS:
+        return "image"
+    if ext in {"mp4", "webm", "mov", "mkv"}:
+        return "video"
+
+    formats = item.get("formats") or []
+    if any(fmt.get("vcodec") not in {None, "none"} for fmt in formats):
+        return "video"
+    if item.get("vcodec") not in {None, "none"}:
+        return "video"
+    return None
+
+
+def _build_original_option(item: dict, default_label: str = "Original media") -> dict | None:
+    media_type = _infer_media_type(item)
+    ext = _entry_ext(item)
+    if media_type == "image":
+        return {
+            "id": "image-original",
+            "kind": "image",
+            "container": ext or "jpg",
+            "label": "Original image" if default_label == "Original media" else default_label,
+            "selector": "best",
+        }
+    if media_type == "video":
+        return {
+            "id": "video-original",
+            "kind": "video",
+            "container": ext or "mp4",
+            "label": "Original video" if default_label == "Original media" else default_label,
+            "selector": "best",
+        }
+    return None
+
+
+def _collect_media_entries(info: dict) -> list[dict]:
+    entries = _normalize_entries(info)
+    if not entries:
+        media_type = _infer_media_type(info)
+        if media_type and info.get("url"):
+            entries = [info]
+
+    collected = []
+    for entry in entries:
+        media_type = entry.get("media_type") or _infer_media_type(entry)
+        if media_type not in {"image", "video"}:
+            continue
+        collected.append(
+            {
+                "url": entry.get("url"),
+                "ext": _entry_ext(entry),
+                "media_type": media_type,
+                "http_headers": entry.get("http_headers") or {},
+            }
+        )
+    return [entry for entry in collected if entry.get("url")]
+
+
+def _append_media_bucket_options(options: list[dict], entries: list[dict], prefix: str = "media") -> None:
+    image_count = sum(1 for entry in entries if entry["media_type"] == "image")
+    video_count = sum(1 for entry in entries if entry["media_type"] == "video")
+
+    if image_count:
+        ext = next((entry["ext"] for entry in entries if entry["media_type"] == "image" and entry.get("ext")), "jpg")
+        options.append(
+            {
+                "id": f"{prefix}-images-original",
+                "kind": "image",
+                "container": "zip" if image_count > 1 else ext,
+                "label": "Original image" if image_count == 1 else f"Original images ({image_count})",
+            }
+        )
+
+    if video_count:
+        ext = next((entry["ext"] for entry in entries if entry["media_type"] == "video" and entry.get("ext")), "mp4")
+        options.append(
+            {
+                "id": f"{prefix}-videos-original",
+                "kind": "video",
+                "container": "zip" if video_count > 1 else ext,
+                "label": "Original video" if video_count == 1 else f"Original videos ({video_count})",
+            }
+        )
+
+    if image_count and video_count:
+        options.append(
+            {
+                "id": f"{prefix}-media-original",
+                "kind": "mixed",
+                "container": "zip",
+                "label": f"Original post media ({image_count + video_count})",
+            }
+        )
+
+
 def _extract_vsco_media(url: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_UA})
     with urllib.request.urlopen(req, timeout=20) as resp:
@@ -457,45 +561,40 @@ def _get_media_info(url: str) -> dict:
 def _build_media_options(url: str) -> dict:
     info = _get_media_info(url)
     platform = info.get("platform") or _guess_platform(url, info.get("extractor_key"))
-    entries = info.get("entries") or []
+    entries = _collect_media_entries(info)
     has_gallery = bool(entries)
 
     options = []
-    if platform != "vsco":
+    if platform not in {"vsco", "instagram"}:
         options.extend(_build_audio_options())
         if info.get("formats"):
             options.extend(_build_video_options(info))
 
     if platform == "vsco":
-        image_count = sum(1 for entry in entries if entry.get("media_type") == "image")
-        video_count = sum(1 for entry in entries if entry.get("media_type") == "video")
-        if image_count:
-            options.append(
-                {
-                    "id": "vsco-images-original",
-                    "kind": "image",
-                    "container": "zip" if image_count > 1 else "jpg",
-                    "label": "Original image" if image_count == 1 else f"Original images ({image_count})",
-                }
-            )
-        if video_count:
-            options.append(
-                {
-                    "id": "vsco-videos-original",
-                    "kind": "video",
-                    "container": "zip" if video_count > 1 else "mp4",
-                    "label": "Original video" if video_count == 1 else f"Original videos ({video_count})",
-                }
-            )
+        _append_media_bucket_options(options, entries, "vsco")
+    elif platform == "instagram" and entries:
+        _append_media_bucket_options(options, entries, "instagram")
+        if info.get("formats"):
+            options.extend(_build_video_options(info))
     elif has_gallery:
-        options.append(
-            {
-                "id": "post-original",
-                "kind": "mixed",
-                "container": "zip",
-                "label": f"Original post media ({len(entries)})",
-            }
-        )
+        if len(entries) == 1:
+            original_option = _build_original_option(entries[0])
+            if original_option:
+                options.append(original_option)
+        else:
+            options.append(
+                {
+                    "id": "post-original",
+                    "kind": "mixed",
+                    "container": "zip",
+                    "label": f"Original post media ({len(entries)})",
+                }
+            )
+
+    if not options:
+        original_option = _build_original_option(info)
+        if original_option:
+            options.append(original_option)
 
     return {
         "title": info.get("title") or "Media",
@@ -538,8 +637,9 @@ def _parse_whisper_output(stdout: str) -> dict:
     return {"text": " ".join(texts).strip(), "chunks": chunks}
 
 
-def _download_direct_file(url: str, destination: str) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_UA})
+def _download_direct_file(url: str, destination: str, headers: dict | None = None) -> None:
+    req_headers = {"User-Agent": DEFAULT_UA, **(headers or {})}
+    req = urllib.request.Request(url, headers=req_headers)
     with urllib.request.urlopen(req, timeout=60) as resp, open(destination, "wb") as f:
         shutil.copyfileobj(resp, f)
 
@@ -698,32 +798,43 @@ def _download_with_ytdlp(url: str, option: dict, title: str) -> tuple[str, str, 
 
 def _download_vsco_media(url: str, option: dict, title: str) -> tuple[str, str, str]:
     info = _extract_vsco_media(url)
-    entries = info["entries"]
+    return _download_direct_media_entries(info, option, title)
 
-    if option["kind"] == "image":
+
+def _download_direct_media_entries(info: dict, option: dict, title: str) -> tuple[str, str, str]:
+    entries = _collect_media_entries(info)
+    option_id = option.get("id", "")
+
+    if option.get("kind") == "image" or option_id.endswith("-images-original"):
         entries = [entry for entry in entries if entry["media_type"] == "image"]
-    elif option["kind"] == "video":
+    elif option.get("kind") == "video" or option_id.endswith("-videos-original"):
         entries = [entry for entry in entries if entry["media_type"] == "video"]
 
     if not entries:
-        raise ValueError("No matching VSCO media found for that option.")
+        raise ValueError("No matching media found for that option.")
 
     tmp_dir = tempfile.mkdtemp()
     downloaded = []
     for idx, entry in enumerate(entries, start=1):
         ext = entry["ext"] or ("jpg" if entry["media_type"] == "image" else "mp4")
         dest = os.path.join(tmp_dir, f"{idx:02d}.{ext}")
-        _download_direct_file(entry["url"], dest)
+        _download_direct_file(entry["url"], dest, entry.get("http_headers"))
         downloaded.append(dest)
 
     if len(downloaded) == 1:
         ext = os.path.splitext(downloaded[0])[1].lstrip(".").lower()
-        suffix = "image" if option["kind"] == "image" else "video"
+        suffix = "image" if entries[0]["media_type"] == "image" else "video"
         return tmp_dir, downloaded[0], _build_download_filename(title, suffix, ext)
 
-    archive_path = os.path.join(tmp_dir, "vsco-media.zip")
+    archive_path = os.path.join(tmp_dir, "media-bundle.zip")
     _zip_files(downloaded, archive_path)
-    suffix = "images" if option["kind"] == "image" else "videos"
+    suffix = option.get("kind", "media")
+    if suffix == "mixed":
+        suffix = "media"
+    elif suffix == "image":
+        suffix = "images"
+    elif suffix == "video":
+        suffix = "videos"
     return tmp_dir, archive_path, _build_download_filename(title, suffix, "zip")
 
 
@@ -839,8 +950,20 @@ def download_media():
 
     try:
         platform = _guess_platform(url)
+        direct_option_ids = {
+            "image-original",
+            "video-original",
+            "post-original",
+            "vsco-images-original",
+            "vsco-videos-original",
+            "instagram-images-original",
+            "instagram-videos-original",
+            "instagram-media-original",
+        }
         if platform == "vsco":
             tmp_dir, file_path, filename = _download_vsco_media(url, option, title)
+        elif option.get("id") in direct_option_ids:
+            tmp_dir, file_path, filename = _download_direct_media_entries(_get_media_info(url), option, title)
         else:
             tmp_dir, file_path, filename = _download_with_ytdlp(url, option, title)
         return _send_temp_file(tmp_dir, file_path, filename)
