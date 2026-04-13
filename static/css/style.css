@@ -143,6 +143,26 @@ body {
   gap: 32px;
 }
 
+/* ── YOUTUBE EMBED ──────────────────────────────────────── */
+.youtube-preview { width: 100%; }
+
+.youtube-embed-wrapper {
+  position: relative;
+  width: 100%;
+  padding-bottom: 56.25%; /* 16:9 */
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #000;
+}
+
+.youtube-embed-wrapper iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
 .preview-section { display: flex; flex-direction: column; gap: 14px; }
 
 .preview-section-header {

@@ -30,6 +30,7 @@ const imageUrlCache = new Map(); // File object → object URL string
 const state = {
   url: '',
   downloadMeta: null,
+  youtubeEmbed: null,  // { videoId, startSeconds } when a YouTube URL is loaded
   modelReady: false,
 
   uploadedImages: [],
@@ -181,6 +182,35 @@ function renderPlatformBadge(platform) {
   platformBadge.className = `platform-badge visible ${platform.id}`;
 }
 
+// ─── YouTube URL parsing ──────────────────────────────────────────────────────
+function parseYouTubeTimestamp(t) {
+  if (!t) return 0;
+  if (/^\d+$/.test(t)) return parseInt(t, 10);
+  // Handle "1h2m3s" / "2m30s" / "90s" formats
+  let secs = 0;
+  const h = t.match(/(\d+)h/); if (h) secs += parseInt(h[1]) * 3600;
+  const m = t.match(/(\d+)m/); if (m) secs += parseInt(m[1]) * 60;
+  const s = t.match(/(\d+)s/); if (s) secs += parseInt(s[1]);
+  return secs;
+}
+
+function parseYouTubeUrl(url) {
+  try {
+    const u = new URL(url);
+    let videoId = null;
+    if (u.hostname === 'youtu.be') {
+      videoId = u.pathname.slice(1).split('/')[0];
+    } else if (u.hostname.includes('youtube.com')) {
+      videoId = u.searchParams.get('v');
+    }
+    if (!videoId) return null;
+    const startSeconds = parseYouTubeTimestamp(u.searchParams.get('t'));
+    return { videoId, startSeconds };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Model status ─────────────────────────────────────────────────────────────
 async function initializeServerMode() {
   modelStatusBar.hidden = false;
@@ -217,12 +247,14 @@ urlInput.addEventListener('input', () => {
   const url = urlInput.value.trim();
   state.url = url;
   state.downloadMeta = null;
+  state.youtubeEmbed = null;
   urlOptions.hidden = true;
   setUrlFeedback('');
   downloadBtn.disabled = true;
   transcribeBtn.disabled = true;
   clearTimeout(analyzeTimer);
   renderPlatformBadge(detectPlatform(url));
+  renderPreviewPanel();
   if (!looksLikeUrl(url)) { setUrlSpinner(false); return; }
   setUrlSpinner(true);
   analyzeTimer = setTimeout(() => autoAnalyzeUrl(url), 600);
@@ -274,8 +306,10 @@ async function autoAnalyzeUrl(url) {
 
 function renderDownloadMeta(meta, url) {
   state.downloadMeta = meta;
+  state.youtubeEmbed = parseYouTubeUrl(url || state.url);
   setUrlFeedback('');
   urlMediaTitle.textContent = meta.title || url;
+  renderPreviewPanel();
   const p = detectPlatform(url || state.url);
   if (p) { dlPlatformBadge.textContent = p.label; dlPlatformBadge.className = `platform-badge visible ${p.id}`; }
   else    { dlPlatformBadge.className = 'platform-badge'; }
@@ -683,10 +717,29 @@ clearPdfsBtn.addEventListener('click', () => {
 });
 
 // ─── PREVIEW PANEL RENDERING ─────────────────────────────────────────────────
+function buildYouTubePreview({ videoId, startSeconds }) {
+  const section = document.createElement('div');
+  section.className = 'youtube-preview';
+  let embedUrl = `https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1`;
+  if (startSeconds > 0) embedUrl += `&start=${startSeconds}`;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'youtube-embed-wrapper';
+  const iframe = document.createElement('iframe');
+  iframe.src = embedUrl;
+  iframe.title = 'YouTube video player';
+  iframe.setAttribute('frameborder', '0');
+  iframe.setAttribute('allowfullscreen', '');
+  iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+  wrapper.appendChild(iframe);
+  section.appendChild(wrapper);
+  return section;
+}
+
 function renderPreviewPanel() {
-  const hasImages = state.uploadedImages.length > 0;
-  const hasPdfs   = state.uploadedPdfs.length > 0;
-  const isEmpty   = !hasImages && !hasPdfs;
+  const hasImages  = state.uploadedImages.length > 0;
+  const hasPdfs    = state.uploadedPdfs.length > 0;
+  const hasYouTube = !!state.youtubeEmbed;
+  const isEmpty    = !hasImages && !hasPdfs && !hasYouTube;
 
   previewEmptyState.hidden = !isEmpty;
   previewContent.hidden    = isEmpty;
@@ -695,6 +748,12 @@ function renderPreviewPanel() {
 
   // Clear and rebuild (cached grid elements survive this via pdfGridCache)
   previewContent.innerHTML = '';
+
+  // YouTube embed (shown when no uploaded files are present)
+  if (hasYouTube && !hasImages && !hasPdfs) {
+    previewContent.appendChild(buildYouTubePreview(state.youtubeEmbed));
+    return;
+  }
 
   if (hasImages) {
     if (state.imageAction === 'to-pdf') {
