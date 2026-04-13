@@ -395,6 +395,14 @@ body {
 
 .url-input-spinner.visible { display: block; }
 
+.url-feedback {
+  margin-top: 10px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.url-feedback.error { color: var(--error-text); }
+
 .platform-badge {
   position: absolute; right: 8px;
   font-size: 0.68rem; font-weight: 700;
@@ -419,6 +427,8 @@ body {
 
 .primary-actions { display: flex; gap: 8px; margin-top: 14px; }
 .primary-actions .btn { flex: 1; justify-content: center; }
+.secondary-actions { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.secondary-actions .btn { align-self: flex-start; }
 
 .video-progress { margin-top: 12px; }
 .progress-bar-track { background: var(--bg); border-radius: 999px; height: 4px; overflow: hidden; }
@@ -453,6 +463,24 @@ body {
 }
 
 .select-input:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(99,102,241,0.10); }
+
+.text-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.text-input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.10);
+}
 
 /* ── BUTTONS ────────────────────────────────────────────── */
 .btn {

@@ -52,6 +52,17 @@ GS_PRESET_MAP = {
     "small": "/ebook",
     "quality": "/printer",
 }
+FRAME_IMAGE_FORMATS = {"jpg", "png"}
+DIRECT_DOWNLOAD_OPTION_IDS = {
+    "image-original",
+    "video-original",
+    "post-original",
+    "vsco-images-original",
+    "vsco-videos-original",
+    "instagram-images-original",
+    "instagram-videos-original",
+    "instagram-media-original",
+}
 
 
 def _cleanup_dir(path: str) -> None:
@@ -744,6 +755,66 @@ def _zip_files(files: list[str], archive_path: str) -> str:
     return archive_path
 
 
+def _extract_video_frames(
+    video_paths: list[str],
+    *,
+    interval_seconds: int,
+    target_format: str,
+    max_frames: int,
+    tmp_dir: str,
+) -> tuple[str, str]:
+    if target_format not in FRAME_IMAGE_FORMATS:
+        raise ValueError("Frame format must be jpg or png.")
+    if interval_seconds < 1 or interval_seconds > 600:
+        raise ValueError("Frame interval must be between 1 and 600 seconds.")
+    if max_frames < 1 or max_frames > 120:
+        raise ValueError("Max frames must be between 1 and 120.")
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise ValueError("ffmpeg is not installed on the server.")
+
+    created = []
+    for index, video_path in enumerate(video_paths, start=1):
+        prefix = f"video-{index:02d}-" if len(video_paths) > 1 else ""
+        output_pattern = os.path.join(tmp_dir, f"{prefix}frame-%03d.{target_format}")
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            video_path,
+            "-vf",
+            f"fps=1/{interval_seconds}",
+            "-frames:v",
+            str(max_frames),
+            "-vsync",
+            "vfr",
+            output_pattern,
+        ]
+        if target_format == "jpg":
+            cmd[10:10] = ["-q:v", "2"]
+        run = subprocess.run(cmd, capture_output=True, text=True)
+        if run.returncode != 0:
+            raise ValueError(run.stderr.strip() or "Frame extraction failed.")
+        created.extend(
+            [
+                os.path.join(tmp_dir, fname)
+                for fname in sorted(os.listdir(tmp_dir))
+                if fname.startswith(prefix + "frame-") and fname.endswith(f".{target_format}")
+            ]
+        )
+
+    if not created:
+        raise ValueError("No frames were extracted from this video.")
+
+    if len(created) == 1:
+        return created[0], os.path.basename(created[0])
+
+    archive_path = os.path.join(tmp_dir, "frames.zip")
+    _zip_files(created, archive_path)
+    return archive_path, "frames.zip"
+
+
 def _build_download_filename(title: str, suffix: str, ext: str) -> str:
     base = _sanitize_filename(title, "download")
     suffix_part = f"_{suffix}" if suffix else ""
@@ -838,6 +909,21 @@ def _download_direct_media_entries(info: dict, option: dict, title: str) -> tupl
     return tmp_dir, archive_path, _build_download_filename(title, suffix, "zip")
 
 
+def _download_direct_video_files(info: dict) -> tuple[str, list[str]]:
+    entries = [entry for entry in _collect_media_entries(info) if entry["media_type"] == "video"]
+    if not entries:
+        raise ValueError("No video source was found for frame extraction.")
+
+    tmp_dir = tempfile.mkdtemp()
+    downloaded = []
+    for idx, entry in enumerate(entries, start=1):
+        ext = entry["ext"] or "mp4"
+        dest = os.path.join(tmp_dir, f"video-{idx:02d}.{ext}")
+        _download_direct_file(entry["url"], dest, entry.get("http_headers"))
+        downloaded.append(dest)
+    return tmp_dir, downloaded
+
+
 def _send_temp_file(tmp_dir: str, path: str, download_name: str):
     response = send_file(path, as_attachment=True, download_name=download_name, conditional=True, etag=False)
     response.call_on_close(lambda: _cleanup_dir(tmp_dir))
@@ -849,6 +935,27 @@ def _request_value(name: str, default=""):
         data = request.get_json(silent=True) or {}
         return data.get(name, default)
     return request.form.get(name, default)
+
+
+def _resolve_request_option() -> tuple[str, dict, str]:
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        url = str(data.get("url", "")).strip()
+        option = data.get("option") or {}
+        title = str(data.get("title", "download"))
+        return url, option, title
+
+    url = str(request.form.get("url", "")).strip()
+    option_value = str(request.form.get("value", "")).strip()
+    option_kind = str(request.form.get("kind", "")).strip().lower()
+    if url and option_value:
+        meta = _build_media_options(url)
+        option = next((item for item in meta.get("options", []) if item.get("id") == option_value), {})
+        if option_kind and option and option.get("kind") != option_kind:
+            option = {}
+        title = str(meta.get("title") or "download")
+        return url, option, title
+    return url, {}, "download"
 
 
 @api.route("/api/media-options", methods=["POST"])
@@ -924,24 +1031,7 @@ def transcribe_server():
 
 @api.route("/api/download-media", methods=["POST"])
 def download_media():
-    if request.is_json:
-        data = request.get_json(silent=True) or {}
-        url = str(data.get("url", "")).strip()
-        option = data.get("option") or {}
-        title = str(data.get("title", "download"))
-    else:
-        url = str(request.form.get("url", "")).strip()
-        option_value = str(request.form.get("value", "")).strip()
-        option_kind = str(request.form.get("kind", "")).strip().lower()
-        if url and option_value:
-            meta = _build_media_options(url)
-            option = next((item for item in meta.get("options", []) if item.get("id") == option_value), {})
-            if option_kind and option and option.get("kind") != option_kind:
-                option = {}
-            title = str(meta.get("title") or "download")
-        else:
-            option = {}
-            title = "download"
+    url, option, title = _resolve_request_option()
 
     if not url:
         return jsonify({"error": "No URL provided."}), 400
@@ -950,24 +1040,58 @@ def download_media():
 
     try:
         platform = _guess_platform(url)
-        direct_option_ids = {
-            "image-original",
-            "video-original",
-            "post-original",
-            "vsco-images-original",
-            "vsco-videos-original",
-            "instagram-images-original",
-            "instagram-videos-original",
-            "instagram-media-original",
-        }
         if platform == "vsco":
             tmp_dir, file_path, filename = _download_vsco_media(url, option, title)
-        elif option.get("id") in direct_option_ids:
+        elif option.get("id") in DIRECT_DOWNLOAD_OPTION_IDS:
             tmp_dir, file_path, filename = _download_direct_media_entries(_get_media_info(url), option, title)
         else:
             tmp_dir, file_path, filename = _download_with_ytdlp(url, option, title)
         return _send_temp_file(tmp_dir, file_path, filename)
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/extract-frames", methods=["POST"])
+def extract_frames():
+    tmp_dir = None
+    try:
+        url, option, title = _resolve_request_option()
+        if not url:
+            return jsonify({"error": "No URL provided."}), 400
+        if not option:
+            return jsonify({"error": "No media option provided."}), 400
+        if option.get("kind") != "video":
+            return jsonify({"error": "Frame extraction requires a video option."}), 400
+
+        target_format = request.form.get("target_format", "").strip().lower()
+        interval_seconds = int(request.form.get("interval_seconds", "5").strip() or "5")
+        max_frames = int(request.form.get("max_frames", "12").strip() or "12")
+
+        platform = _guess_platform(url)
+        if platform == "vsco" or option.get("id") in DIRECT_DOWNLOAD_OPTION_IDS:
+            tmp_dir, video_paths = _download_direct_video_files(_get_media_info(url))
+        else:
+            tmp_dir, file_path, _filename = _download_with_ytdlp(url, option, title)
+            if os.path.splitext(file_path)[1].lower() == ".zip":
+                raise ValueError("Frame extraction requires a single video download option.")
+            video_paths = [file_path]
+
+        output_path, output_name = _extract_video_frames(
+            video_paths,
+            interval_seconds=interval_seconds,
+            target_format=target_format,
+            max_frames=max_frames,
+            tmp_dir=tmp_dir,
+        )
+        download_name = _build_download_filename(title, "frames", output_name.rsplit(".", 1)[-1])
+        return _send_temp_file(tmp_dir, output_path, download_name)
+    except ValueError as e:
+        if tmp_dir:
+            _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        if tmp_dir:
+            _cleanup_dir(tmp_dir)
         return jsonify({"error": str(e)}), 500
 
 

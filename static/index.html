@@ -47,6 +47,7 @@
             <span class="url-input-spinner" id="url-analyze-spinner" aria-hidden="true"></span>
             <span class="platform-badge" id="platform-badge"></span>
           </div>
+          <p class="url-feedback" id="url-feedback" hidden></p>
 
           <!-- Auto-revealed after URL analysis -->
           <div id="url-options" hidden>
@@ -70,6 +71,26 @@
               <button class="btn btn-primary" id="transcribe-btn" disabled>
                 <span id="transcribe-btn-text">Transcribe</span>
               </button>
+            </div>
+            <div class="secondary-actions" id="frame-tools" hidden>
+              <div class="download-grid">
+                <label class="field">
+                  <span class="field-label">Frame every</span>
+                  <input type="number" id="frame-interval" class="text-input" min="1" max="600" step="1" value="5" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Format</span>
+                  <select id="frame-format" class="select-input">
+                    <option value="jpg">JPG</option>
+                    <option value="png">PNG</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">Max frames</span>
+                  <input type="number" id="frame-limit" class="text-input" min="1" max="120" step="1" value="12" />
+                </label>
+              </div>
+              <button class="btn btn-secondary" id="extract-frames-btn" disabled>🖼 Extract frames</button>
             </div>
             <div class="video-progress" id="download-progress" hidden>
               <div class="progress-bar-track"><div class="progress-bar-fill"></div></div>

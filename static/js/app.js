@@ -57,6 +57,7 @@ const platformIcon      = document.getElementById('platform-icon');
 const platformBadge     = document.getElementById('platform-badge');
 const urlAnalyzeSpinner = document.getElementById('url-analyze-spinner');
 const urlOptions        = document.getElementById('url-options');
+const urlFeedback       = document.getElementById('url-feedback');
 const urlMediaTitle     = document.getElementById('url-media-title');
 const dlPlatformBadge   = document.getElementById('download-platform-badge');
 const downloadKind      = document.getElementById('download-kind');
@@ -64,6 +65,11 @@ const downloadOption    = document.getElementById('download-option');
 const downloadBtn       = document.getElementById('download-btn');
 const transcribeBtn     = document.getElementById('transcribe-btn');
 const transcribeBtnText = document.getElementById('transcribe-btn-text');
+const frameTools        = document.getElementById('frame-tools');
+const frameInterval     = document.getElementById('frame-interval');
+const frameFormat       = document.getElementById('frame-format');
+const frameLimit        = document.getElementById('frame-limit');
+const extractFramesBtn  = document.getElementById('extract-frames-btn');
 
 const mobileAddFilesBtn = document.getElementById('mobile-add-files-btn');
 const fileInput         = document.getElementById('file-input');
@@ -212,6 +218,7 @@ urlInput.addEventListener('input', () => {
   state.url = url;
   state.downloadMeta = null;
   urlOptions.hidden = true;
+  setUrlFeedback('');
   downloadBtn.disabled = true;
   transcribeBtn.disabled = true;
   clearTimeout(analyzeTimer);
@@ -223,6 +230,18 @@ urlInput.addEventListener('input', () => {
 
 function setUrlSpinner(v) { urlAnalyzeSpinner.classList.toggle('visible', v); }
 
+function setUrlFeedback(message = '', tone = 'error') {
+  if (!message) {
+    urlFeedback.hidden = true;
+    urlFeedback.textContent = '';
+    urlFeedback.className = 'url-feedback';
+    return;
+  }
+  urlFeedback.hidden = false;
+  urlFeedback.textContent = message;
+  urlFeedback.className = `url-feedback ${tone}`;
+}
+
 async function autoAnalyzeUrl(url) {
   try {
     const res = await fetch('/api/media-options', {
@@ -232,15 +251,30 @@ async function autoAnalyzeUrl(url) {
     });
     if (urlInput.value.trim() !== url) return;
     setUrlSpinner(false);
-    if (!res.ok) return;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      urlOptions.hidden = true;
+      setUrlFeedback(err.error || `Could not analyze this link (${res.status}).`);
+      return;
+    }
     const meta = await res.json();
-    if (!meta.options?.length) return;
+    if (!meta.options?.length) {
+      urlOptions.hidden = true;
+      setUrlFeedback('No downloadable media options were found for this link.');
+      return;
+    }
+    setUrlFeedback('');
     renderDownloadMeta(meta, url);
-  } catch { setUrlSpinner(false); }
+  } catch {
+    setUrlSpinner(false);
+    urlOptions.hidden = true;
+    setUrlFeedback('Could not analyze this link right now.');
+  }
 }
 
 function renderDownloadMeta(meta, url) {
   state.downloadMeta = meta;
+  setUrlFeedback('');
   urlMediaTitle.textContent = meta.title || url;
   const p = detectPlatform(url || state.url);
   if (p) { dlPlatformBadge.textContent = p.label; dlPlatformBadge.className = `platform-badge visible ${p.id}`; }
@@ -260,6 +294,21 @@ function updateQualityOptions() {
   if (!state.downloadMeta) return;
   const opts = state.downloadMeta.options.filter(o => o.kind === downloadKind.value);
   downloadOption.innerHTML = opts.map(o => `<option value="${o.id}">${o.label}</option>`).join('');
+  updateFrameExtractionAvailability();
+}
+
+downloadOption.addEventListener('change', updateFrameExtractionAvailability);
+
+function getSelectedDownloadOption() {
+  if (!state.downloadMeta) return null;
+  return state.downloadMeta.options.find(o => o.id === downloadOption.value) || null;
+}
+
+function updateFrameExtractionAvailability() {
+  const option = getSelectedDownloadOption();
+  const supportsFrames = option?.kind === 'video';
+  frameTools.hidden = !supportsFrames;
+  extractFramesBtn.disabled = !supportsFrames;
 }
 
 // ─── Network request helper ───────────────────────────────────────────────────
@@ -310,6 +359,7 @@ const JOB_ICONS = {
   'transcribe': '🎙', 'download-media': '⬇',
   'compress-pdf': '📄', 'pdf-to-images': '📑',
   'convert-image': '🖼', 'images-to-pdf': '📋',
+  'extract-frames': '🎞',
 };
 
 function renderJobCard(id) {
@@ -413,6 +463,28 @@ downloadBtn.addEventListener('click', () => {
     fd.append('kind', downloadKind.value);
     fd.append('value', downloadOption.value);
     return sendRequest('/api/download-media', fd);
+  });
+  updateJob(jobId, { retryFn: doIt });
+  doIt();
+});
+
+extractFramesBtn.addEventListener('click', () => {
+  const option = getSelectedDownloadOption();
+  if (!option || option.kind !== 'video') return;
+  const everySeconds = Math.max(1, Number.parseInt(frameInterval.value, 10) || 5);
+  const maxFrames = Math.max(1, Number.parseInt(frameLimit.value, 10) || 12);
+  const format = frameFormat.value === 'png' ? 'png' : 'jpg';
+  const label = `${state.downloadMeta?.title || state.url} · frames`;
+  const jobId = addJob({ type: 'extract-frames', label, status: 'pending' });
+  const doIt = () => runFileJob(jobId, async () => {
+    const fd = new FormData();
+    fd.append('url', state.url);
+    fd.append('kind', downloadKind.value);
+    fd.append('value', downloadOption.value);
+    fd.append('interval_seconds', String(everySeconds));
+    fd.append('max_frames', String(maxFrames));
+    fd.append('target_format', format);
+    return sendRequest('/api/extract-frames', fd);
   });
   updateJob(jobId, { retryFn: doIt });
   doIt();

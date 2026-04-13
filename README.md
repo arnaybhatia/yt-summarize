@@ -15,6 +15,7 @@ Everything runs on the Raspberry Pi:
 
 - YouTube, Instagram, and TikTok downloads with selectable MP3 and MP4 quality options.
 - VSCO public-page image and video download support.
+- Video frame extraction from supported URL-based video sources, including YouTube videos and short-form reels/posts.
 - Server-side transcript generation with plain and timestamped output.
 - Image-to-PDF conversion with manual upload ordering.
 - Image format conversion for `jpg/jpeg`, `png`, and `webp`.
@@ -98,4 +99,5 @@ Environment=WHISPER_CPP_MODEL=/home/strifedeeno/whisper.cpp/models/ggml-base.en.
 
 - `yt-dlp` site support can change over time, especially for Instagram, TikTok, and VSCO.
 - Highest-quality downloads still depend on what the platform exposes for the specific media item.
+- Frame extraction samples at a fixed interval and caps the total number of exported images per job.
 - On a Pi, `base.en` is usually a better tradeoff than larger models for English-only transcription.
