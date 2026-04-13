@@ -21,6 +21,20 @@ async function ensurePdfjsLoaded() {
   }
 }
 
+// ─── JSZip (lazy-loaded when extracting multiple frames) ─────────────────────
+let jszipLib = null;
+
+async function ensureJSZipLoaded() {
+  if (jszipLib) return jszipLib;
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+    jszipLib = mod.default || mod;
+    return jszipLib;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Caches ───────────────────────────────────────────────────────────────────
 const pdfGridCache  = new Map(); // file.name → grid Element (avoids re-rendering)
 const pdfNavCache   = new Map(); // file.name → nav Element
@@ -30,7 +44,9 @@ const imageUrlCache = new Map(); // File object → object URL string
 const state = {
   url: '',
   downloadMeta: null,
-  youtubeEmbed: null,  // { videoId, startSeconds } when a YouTube URL is loaded
+  youtubeEmbed: null,      // { videoId, startSeconds } when a YouTube URL is loaded
+  frameTimestamps: [],     // sorted array of seconds the user wants to extract
+  extractedFrames: null,   // { frames: [{url, name}], title } after extraction
   modelReady: false,
 
   uploadedImages: [],
@@ -66,10 +82,12 @@ const downloadOption    = document.getElementById('download-option');
 const downloadBtn       = document.getElementById('download-btn');
 const transcribeBtn     = document.getElementById('transcribe-btn');
 const transcribeBtnText = document.getElementById('transcribe-btn-text');
+const qualityField      = document.getElementById('quality-field');
 const frameTools        = document.getElementById('frame-tools');
-const frameInterval     = document.getElementById('frame-interval');
+const frameTsInput      = document.getElementById('frame-ts-input');
+const frameTsAddBtn     = document.getElementById('frame-ts-add-btn');
+const frameTsList       = document.getElementById('frame-ts-list');
 const frameFormat       = document.getElementById('frame-format');
-const frameLimit        = document.getElementById('frame-limit');
 const extractFramesBtn  = document.getElementById('extract-frames-btn');
 
 const mobileAddFilesBtn = document.getElementById('mobile-add-files-btn');
@@ -211,6 +229,70 @@ function parseYouTubeUrl(url) {
   }
 }
 
+// ─── Timestamp picker helpers ────────────────────────────────────────────────
+function parseTimestampInput(s) {
+  s = s.trim().replace(/[^0-9:]/g, '');
+  if (!s) return null;
+  const parts = s.split(':').map(Number);
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 1) return parts[0];
+  return null;
+}
+
+function formatDisplayTimestamp(secs) {
+  secs = Math.round(secs);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function renderTimestampList() {
+  if (!state.frameTimestamps.length) {
+    frameTsList.hidden = true;
+    extractFramesBtn.disabled = true;
+    return;
+  }
+  frameTsList.hidden = false;
+  extractFramesBtn.disabled = false;
+  frameTsList.innerHTML = state.frameTimestamps.map((t, i) =>
+    `<li class="ts-item">
+      <span class="ts-label">${formatDisplayTimestamp(t)}</span>
+      <button class="ts-remove" type="button" data-index="${i}" title="Remove">×</button>
+    </li>`
+  ).join('');
+}
+
+frameTsAddBtn.addEventListener('click', addTimestamp);
+frameTsInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTimestamp(); } });
+
+function addTimestamp() {
+  const secs = parseTimestampInput(frameTsInput.value);
+  if (secs === null || secs < 0) {
+    frameTsInput.classList.add('input-error');
+    setTimeout(() => frameTsInput.classList.remove('input-error'), 800);
+    return;
+  }
+  if (!state.frameTimestamps.includes(secs)) {
+    state.frameTimestamps.push(secs);
+    state.frameTimestamps.sort((a, b) => a - b);
+  }
+  frameTsInput.value = '';
+  frameTsInput.focus();
+  renderTimestampList();
+}
+
+frameTsList.addEventListener('click', e => {
+  const btn = e.target.closest('.ts-remove');
+  if (!btn) return;
+  const i = Number(btn.dataset.index);
+  state.frameTimestamps.splice(i, 1);
+  renderTimestampList();
+});
+
 // ─── Model status ─────────────────────────────────────────────────────────────
 async function initializeServerMode() {
   modelStatusBar.hidden = false;
@@ -248,6 +330,8 @@ urlInput.addEventListener('input', () => {
   state.url = url;
   state.downloadMeta = null;
   state.youtubeEmbed = null;
+  state.frameTimestamps = [];
+  state.extractedFrames = null;
   urlOptions.hidden = true;
   setUrlFeedback('');
   downloadBtn.disabled = true;
@@ -314,9 +398,19 @@ function renderDownloadMeta(meta, url) {
   if (p) { dlPlatformBadge.textContent = p.label; dlPlatformBadge.className = `platform-badge visible ${p.id}`; }
   else    { dlPlatformBadge.className = 'platform-badge'; }
   const kinds = [...new Set(meta.options.map(o => o.kind))];
-  downloadKind.innerHTML = kinds.map(k =>
-    `<option value="${k}">${k === 'video' ? 'Video' : k === 'audio' ? 'Audio' : k === 'image' ? 'Image' : k === 'mixed' ? 'Post media' : k}</option>`
-  ).join('');
+  const hasVideo = kinds.includes('video');
+  // Inject virtual 'frames' kind (timestamp-based frame extraction) when video is available
+  const displayKinds = [...kinds, ...(hasVideo ? ['frames'] : [])];
+  const kindLabel = k => ({ video: 'Video', audio: 'Audio', image: 'Image', mixed: 'Post media', frames: 'Images' }[k] || k);
+  downloadKind.innerHTML = displayKinds.map(k => `<option value="${k}">${kindLabel(k)}</option>`).join('');
+  // Pre-seed timestamp list from URL if it has a ?t= param
+  if (hasVideo && state.youtubeEmbed?.startSeconds > 0) {
+    const t = state.youtubeEmbed.startSeconds;
+    if (!state.frameTimestamps.includes(t)) {
+      state.frameTimestamps = [t];
+      renderTimestampList();
+    }
+  }
   updateQualityOptions();
   downloadKind.onchange = updateQualityOptions;
   urlOptions.hidden = false;
@@ -326,23 +420,22 @@ function renderDownloadMeta(meta, url) {
 
 function updateQualityOptions() {
   if (!state.downloadMeta) return;
-  const opts = state.downloadMeta.options.filter(o => o.kind === downloadKind.value);
+  const kind = downloadKind.value;
+  if (kind === 'frames') {
+    qualityField.hidden = true;
+    frameTools.hidden = false;
+    renderTimestampList();
+    return;
+  }
+  qualityField.hidden = false;
+  frameTools.hidden = true;
+  const opts = state.downloadMeta.options.filter(o => o.kind === kind);
   downloadOption.innerHTML = opts.map(o => `<option value="${o.id}">${o.label}</option>`).join('');
-  updateFrameExtractionAvailability();
 }
-
-downloadOption.addEventListener('change', updateFrameExtractionAvailability);
 
 function getSelectedDownloadOption() {
   if (!state.downloadMeta) return null;
   return state.downloadMeta.options.find(o => o.id === downloadOption.value) || null;
-}
-
-function updateFrameExtractionAvailability() {
-  const option = getSelectedDownloadOption();
-  const supportsFrames = option?.kind === 'video';
-  frameTools.hidden = !supportsFrames;
-  extractFramesBtn.disabled = !supportsFrames;
 }
 
 // ─── Network request helper ───────────────────────────────────────────────────
@@ -503,26 +596,65 @@ downloadBtn.addEventListener('click', () => {
 });
 
 extractFramesBtn.addEventListener('click', () => {
-  const option = getSelectedDownloadOption();
-  if (!option || option.kind !== 'video') return;
-  const everySeconds = Math.max(1, Number.parseInt(frameInterval.value, 10) || 5);
-  const maxFrames = Math.max(1, Number.parseInt(frameLimit.value, 10) || 12);
+  if (!state.frameTimestamps.length || !state.downloadMeta) return;
+  // Use the best available video option for frame extraction
+  const videoOption = state.downloadMeta.options.find(o => o.kind === 'video');
+  if (!videoOption) return;
   const format = frameFormat.value === 'png' ? 'png' : 'jpg';
   const label = `${state.downloadMeta?.title || state.url} · frames`;
+  const timestamps = [...state.frameTimestamps];
   const jobId = addJob({ type: 'extract-frames', label, status: 'pending' });
-  const doIt = () => runFileJob(jobId, async () => {
-    const fd = new FormData();
-    fd.append('url', state.url);
-    fd.append('kind', downloadKind.value);
-    fd.append('value', downloadOption.value);
-    fd.append('interval_seconds', String(everySeconds));
-    fd.append('max_frames', String(maxFrames));
-    fd.append('target_format', format);
-    return sendRequest('/api/extract-frames', fd);
-  });
+  const doIt = () => runFrameJob(jobId, videoOption, format, timestamps);
   updateJob(jobId, { retryFn: doIt });
   doIt();
 });
+
+async function runFrameJob(jobId, videoOption, format, timestamps) {
+  updateJob(jobId, { status: 'processing', step: 'Downloading video…' });
+  try {
+    const fd = new FormData();
+    fd.append('url', state.url);
+    fd.append('kind', videoOption.kind);
+    fd.append('value', videoOption.id);
+    fd.append('timestamps', timestamps.join(','));
+    fd.append('target_format', format);
+    const res = await fetch('/api/extract-frames', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error || `Server error ${res.status}`);
+    }
+    const contentType = res.headers.get('Content-Type') || '';
+    const filename = extractFilename(res.headers.get('Content-Disposition'));
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    updateJob(jobId, { status: 'done', step: null, blobUrl, filename });
+    await showExtractedFrames(blob, filename, contentType, state.downloadMeta?.title);
+  } catch (err) {
+    updateJob(jobId, { status: 'error', step: null, errorMsg: err.message });
+  }
+}
+
+async function showExtractedFrames(blob, filename, contentType, title) {
+  let frames = [];
+  if (contentType.includes('zip') || filename.endsWith('.zip')) {
+    const JSZip = await ensureJSZipLoaded();
+    if (JSZip) {
+      const zip = await JSZip.loadAsync(blob);
+      const entries = Object.entries(zip.files)
+        .filter(([, f]) => !f.dir)
+        .sort(([a], [b]) => a.localeCompare(b));
+      for (const [name, file] of entries) {
+        const data = await file.async('blob');
+        frames.push({ url: URL.createObjectURL(data), name });
+      }
+    }
+  } else {
+    frames = [{ url: URL.createObjectURL(blob), name: filename }];
+  }
+  if (!frames.length) return;
+  state.extractedFrames = { frames, title: title || 'Frames' };
+  renderPreviewPanel();
+}
 
 transcribeBtn.addEventListener('click', () => {
   if (!looksLikeUrl(state.url)) return;
@@ -601,9 +733,14 @@ previewCloseBtn.addEventListener('click', () => {
 
 function updateMobileFab() {
   const count = state.uploadedImages.length + state.uploadedPdfs.length;
-  mobilePreviewFab.hidden = count === 0;
+  const hasMedia = count > 0 || !!state.youtubeEmbed || !!state.extractedFrames;
+  mobilePreviewFab.hidden = !hasMedia;
   if (count > 0) {
     mobilePreviewFab.textContent = `View preview (${count} file${count!==1?'s':''})`;
+  } else if (state.extractedFrames) {
+    mobilePreviewFab.textContent = 'View extracted frames';
+  } else if (state.youtubeEmbed) {
+    mobilePreviewFab.textContent = 'View video';
   }
 }
 
@@ -717,6 +854,46 @@ clearPdfsBtn.addEventListener('click', () => {
 });
 
 // ─── PREVIEW PANEL RENDERING ─────────────────────────────────────────────────
+function buildFramesGallery({ frames, title }) {
+  const section = document.createElement('div');
+  section.className = 'frames-gallery';
+
+  const header = document.createElement('div');
+  header.className = 'frames-gallery-header';
+  header.innerHTML = `
+    <span class="frames-gallery-title">${escHtml(title)} · ${frames.length} frame${frames.length !== 1 ? 's' : ''}</span>
+    <button class="btn btn-ghost btn-sm" id="frames-back-btn">← Video</button>
+  `;
+  header.querySelector('#frames-back-btn').addEventListener('click', () => {
+    state.extractedFrames = null;
+    renderPreviewPanel();
+  });
+  section.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'frames-grid';
+  frames.forEach(({ url, name }) => {
+    const thumb = document.createElement('div');
+    thumb.className = 'frame-thumb';
+    thumb.innerHTML = `
+      <img src="${url}" alt="${escHtml(name)}" loading="lazy" />
+      <a class="frame-thumb-dl" href="${url}" download="${escHtml(name)}" title="Download">⬇</a>
+    `;
+    thumb.querySelector('img').addEventListener('click', () => openFrameLightbox(url));
+    grid.appendChild(thumb);
+  });
+  section.appendChild(grid);
+  return section;
+}
+
+function openFrameLightbox(url) {
+  const overlay = document.createElement('div');
+  overlay.className = 'frame-lightbox-overlay';
+  overlay.innerHTML = `<img class="frame-lightbox-img" src="${url}" />`;
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+
 function buildYouTubePreview({ videoId, startSeconds }) {
   const section = document.createElement('div');
   section.className = 'youtube-preview';
@@ -739,7 +916,8 @@ function renderPreviewPanel() {
   const hasImages  = state.uploadedImages.length > 0;
   const hasPdfs    = state.uploadedPdfs.length > 0;
   const hasYouTube = !!state.youtubeEmbed;
-  const isEmpty    = !hasImages && !hasPdfs && !hasYouTube;
+  const hasFrames  = !!state.extractedFrames;
+  const isEmpty    = !hasImages && !hasPdfs && !hasYouTube && !hasFrames;
 
   previewEmptyState.hidden = !isEmpty;
   previewContent.hidden    = isEmpty;
@@ -749,7 +927,13 @@ function renderPreviewPanel() {
   // Clear and rebuild (cached grid elements survive this via pdfGridCache)
   previewContent.innerHTML = '';
 
-  // YouTube embed (shown when no uploaded files are present)
+  // Extracted frames gallery (takes over when no uploaded files)
+  if (hasFrames && !hasImages && !hasPdfs) {
+    previewContent.appendChild(buildFramesGallery(state.extractedFrames));
+    return;
+  }
+
+  // YouTube player (shown when no uploaded files and no frames)
   if (hasYouTube && !hasImages && !hasPdfs) {
     previewContent.appendChild(buildYouTubePreview(state.youtubeEmbed));
     return;

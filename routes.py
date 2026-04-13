@@ -755,54 +755,43 @@ def _zip_files(files: list[str], archive_path: str) -> str:
     return archive_path
 
 
-def _extract_video_frames(
-    video_paths: list[str],
+def _extract_frames_at_timestamps(
+    video_path: str,
     *,
-    interval_seconds: int,
+    timestamps: list[float],
     target_format: str,
-    max_frames: int,
     tmp_dir: str,
 ) -> tuple[str, str]:
+    """Extract one frame per timestamp (in seconds) from video_path."""
     if target_format not in FRAME_IMAGE_FORMATS:
         raise ValueError("Frame format must be jpg or png.")
-    if interval_seconds < 1 or interval_seconds > 600:
-        raise ValueError("Frame interval must be between 1 and 600 seconds.")
-    if max_frames < 1 or max_frames > 120:
-        raise ValueError("Max frames must be between 1 and 120.")
+    if not timestamps:
+        raise ValueError("At least one timestamp is required.")
+    if len(timestamps) > 50:
+        raise ValueError("Maximum 50 timestamps allowed.")
 
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
         raise ValueError("ffmpeg is not installed on the server.")
 
     created = []
-    for index, video_path in enumerate(video_paths, start=1):
-        prefix = f"video-{index:02d}-" if len(video_paths) > 1 else ""
-        output_pattern = os.path.join(tmp_dir, f"{prefix}frame-%03d.{target_format}")
+    for i, t in enumerate(timestamps):
+        out_path = os.path.join(tmp_dir, f"frame-{i + 1:03d}.{target_format}")
         cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-i",
-            video_path,
-            "-vf",
-            f"fps=1/{interval_seconds}",
-            "-frames:v",
-            str(max_frames),
-            "-vsync",
-            "vfr",
-            output_pattern,
+            ffmpeg_bin, "-y",
+            "-ss", f"{t:.3f}",
+            "-i", video_path,
+            "-vframes", "1",
+            "-vsync", "vfr",
         ]
         if target_format == "jpg":
-            cmd[10:10] = ["-q:v", "2"]
+            cmd += ["-q:v", "2"]
+        cmd.append(out_path)
         run = subprocess.run(cmd, capture_output=True, text=True)
         if run.returncode != 0:
-            raise ValueError(run.stderr.strip() or "Frame extraction failed.")
-        created.extend(
-            [
-                os.path.join(tmp_dir, fname)
-                for fname in sorted(os.listdir(tmp_dir))
-                if fname.startswith(prefix + "frame-") and fname.endswith(f".{target_format}")
-            ]
-        )
+            raise ValueError(run.stderr.strip() or f"Frame extraction failed at {t:.1f}s.")
+        if os.path.exists(out_path):
+            created.append(out_path)
 
     if not created:
         raise ValueError("No frames were extracted from this video.")
@@ -1063,24 +1052,38 @@ def extract_frames():
         if option.get("kind") != "video":
             return jsonify({"error": "Frame extraction requires a video option."}), 400
 
-        target_format = request.form.get("target_format", "").strip().lower()
-        interval_seconds = int(request.form.get("interval_seconds", "5").strip() or "5")
-        max_frames = int(request.form.get("max_frames", "12").strip() or "12")
+        target_format = request.form.get("target_format", "jpg").strip().lower()
+        if target_format not in FRAME_IMAGE_FORMATS:
+            target_format = "jpg"
+
+        timestamps_raw = request.form.get("timestamps", "").strip()
+        if not timestamps_raw:
+            return jsonify({"error": "No timestamps provided."}), 400
+        try:
+            timestamps = [float(t.strip()) for t in timestamps_raw.split(",") if t.strip()]
+        except ValueError:
+            return jsonify({"error": "Invalid timestamps format."}), 400
+        if not timestamps:
+            return jsonify({"error": "No valid timestamps provided."}), 400
+        if len(timestamps) > 50:
+            return jsonify({"error": "Maximum 50 timestamps allowed."}), 400
 
         platform = _guess_platform(url)
         if platform == "vsco" or option.get("id") in DIRECT_DOWNLOAD_OPTION_IDS:
             tmp_dir, video_paths = _download_direct_video_files(_get_media_info(url))
+            video_path = video_paths[0] if video_paths else None
         else:
-            tmp_dir, file_path, _filename = _download_with_ytdlp(url, option, title)
-            if os.path.splitext(file_path)[1].lower() == ".zip":
+            tmp_dir, video_path, _filename = _download_with_ytdlp(url, option, title)
+            if os.path.splitext(video_path)[1].lower() == ".zip":
                 raise ValueError("Frame extraction requires a single video download option.")
-            video_paths = [file_path]
 
-        output_path, output_name = _extract_video_frames(
-            video_paths,
-            interval_seconds=interval_seconds,
+        if not video_path:
+            raise ValueError("Could not download video for frame extraction.")
+
+        output_path, output_name = _extract_frames_at_timestamps(
+            video_path,
+            timestamps=timestamps,
             target_format=target_format,
-            max_frames=max_frames,
             tmp_dir=tmp_dir,
         )
         download_name = _build_download_filename(title, "frames", output_name.rsplit(".", 1)[-1])

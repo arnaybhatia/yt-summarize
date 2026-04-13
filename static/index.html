@@ -61,7 +61,7 @@
                 <span class="field-label">Type</span>
                 <select id="download-kind" class="select-input"></select>
               </label>
-              <label class="field">
+              <label class="field" id="quality-field">
                 <span class="field-label">Quality</span>
                 <select id="download-option" class="select-input"></select>
               </label>
@@ -73,24 +73,22 @@
               </button>
             </div>
             <div class="secondary-actions" id="frame-tools" hidden>
-              <div class="download-grid">
-                <label class="field">
-                  <span class="field-label">Frame every</span>
-                  <input type="number" id="frame-interval" class="text-input" min="1" max="600" step="1" value="5" />
-                </label>
-                <label class="field">
+              <p class="frame-tools-hint">Scrub the video preview, note the time, then add it below.</p>
+              <div class="ts-add-row">
+                <input type="text" id="frame-ts-input" class="text-input" placeholder="e.g. 1:23 or 0:45" autocomplete="off" />
+                <button type="button" class="btn btn-secondary btn-sm" id="frame-ts-add-btn">+ Add</button>
+              </div>
+              <ul id="frame-ts-list" class="ts-list" hidden></ul>
+              <div class="ts-extract-bar">
+                <label class="field" style="flex:1">
                   <span class="field-label">Format</span>
                   <select id="frame-format" class="select-input">
                     <option value="jpg">JPG</option>
                     <option value="png">PNG</option>
                   </select>
                 </label>
-                <label class="field">
-                  <span class="field-label">Max frames</span>
-                  <input type="number" id="frame-limit" class="text-input" min="1" max="120" step="1" value="12" />
-                </label>
+                <button class="btn btn-primary" id="extract-frames-btn" disabled>Extract</button>
               </div>
-              <button class="btn btn-secondary" id="extract-frames-btn" disabled>🖼 Extract frames</button>
             </div>
             <div class="video-progress" id="download-progress" hidden>
               <div class="progress-bar-track"><div class="progress-bar-fill"></div></div>
