@@ -527,13 +527,11 @@ def _pick_progressive_format(
     )
 
 
-def _iter_progressive_formats(formats: list[dict], *, max_height: int | None = None) -> list[dict]:
+def _iter_preview_formats(formats: list[dict], *, max_height: int | None = None) -> list[dict]:
     candidates = []
     seen = set()
     for fmt in formats:
         if fmt.get("vcodec") in {None, "none"}:
-            continue
-        if fmt.get("acodec") in {None, "none"}:
             continue
         if not fmt.get("url"):
             continue
@@ -602,7 +600,7 @@ def _build_preview_info(info: dict) -> dict | None:
         }
 
     formats = info.get("formats") or []
-    preview_candidates = _iter_progressive_formats(formats, max_height=720)
+    preview_candidates = _iter_preview_formats(formats, max_height=720)
     if not preview_candidates:
         return None
 
@@ -610,7 +608,10 @@ def _build_preview_info(info: dict) -> dict | None:
     seen_heights = set()
     for fmt in preview_candidates:
         height = fmt.get("height")
+        has_audio = fmt.get("acodec") not in {None, "none"}
         label = f"{height}p" if height else (fmt.get("ext") or "Source").upper()
+        if not has_audio:
+            label += " (video only)"
         quality_id = str(height or fmt.get("format_id") or len(preview_qualities) + 1)
         if height and height in seen_heights:
             continue
@@ -629,6 +630,7 @@ def _build_preview_info(info: dict) -> dict | None:
                 "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
                 "mime_type": mime_type,
                 "height": height,
+                "has_audio": has_audio,
             }
         )
         if height:
