@@ -46,6 +46,7 @@ const state = {
   downloadMeta: null,
   videoPreview: null,      // { streamUrl, mimeType, startSeconds, title, label, qualities, selectedQualityId }
   frameTimestamps: [],     // sorted array of seconds the user wants to extract
+  clipRange: { start: null, end: null },
   extractedFrames: null,   // { frames: [{url, name}], title } after extraction
   modelReady: false,
 
@@ -93,6 +94,13 @@ const frameTsCurrentBtn = document.getElementById('frame-ts-current-btn');
 const frameTsList       = document.getElementById('frame-ts-list');
 const frameFormat       = document.getElementById('frame-format');
 const extractFramesBtn  = document.getElementById('extract-frames-btn');
+const clipTools         = document.getElementById('clip-tools');
+const clipStartInput    = document.getElementById('clip-start-input');
+const clipEndInput      = document.getElementById('clip-end-input');
+const clipStartCurrentBtn = document.getElementById('clip-start-current-btn');
+const clipEndCurrentBtn = document.getElementById('clip-end-current-btn');
+const clipSummary       = document.getElementById('clip-summary');
+const clipVideoBtn      = document.getElementById('clip-video-btn');
 
 const mobileAddFilesBtn = document.getElementById('mobile-add-files-btn');
 const fileInput         = document.getElementById('file-input');
@@ -233,6 +241,7 @@ function resetAppState() {
   state.downloadMeta = null;
   state.videoPreview = null;
   state.frameTimestamps = [];
+  state.clipRange = { start: null, end: null };
   state.extractedFrames = null;
   state.uploadedImages = [];
   state.uploadedPdfs = [];
@@ -248,6 +257,8 @@ function resetAppState() {
   urlInput.value = '';
   fileInput.value = '';
   frameTsInput.value = '';
+  clipStartInput.value = '';
+  clipEndInput.value = '';
   frameFormat.value = 'jpg';
   imgConvertFormat.value = 'jpg';
   pdfCompressPreset.value = 'small';
@@ -262,9 +273,12 @@ function resetAppState() {
   dlPlatformBadge.textContent = '';
   urlMediaTitle.textContent = '';
   downloadBtn.disabled = true;
-  transcribeBtn.disabled = !state.modelReady;
+  transcribeBtn.disabled = true;
   extractFramesBtn.disabled = true;
   frameTsCurrentBtn.disabled = true;
+  clipVideoBtn.disabled = true;
+  clipStartCurrentBtn.disabled = true;
+  clipEndCurrentBtn.disabled = true;
   previewPanel.classList.remove('open');
   document.body.style.overflow = '';
 
@@ -378,6 +392,43 @@ function renderTimestampList() {
   ).join('');
 }
 
+function renderClipControls() {
+  const { start, end } = state.clipRange;
+  const isValid = Number.isFinite(start) && Number.isFinite(end) && end > start;
+  clipVideoBtn.disabled = !isValid;
+  if (!Number.isFinite(start) && !Number.isFinite(end)) {
+    clipSummary.textContent = 'Set a valid clip range.';
+    return;
+  }
+  if (Number.isFinite(start) && !Number.isFinite(end)) {
+    clipSummary.textContent = `Start: ${formatDisplayTimestamp(start)}. Set an end time.`;
+    return;
+  }
+  if (!Number.isFinite(start) && Number.isFinite(end)) {
+    clipSummary.textContent = `End: ${formatDisplayTimestamp(end)}. Set a start time.`;
+    return;
+  }
+  if (!isValid) {
+    clipSummary.textContent = 'End must be later than start.';
+    return;
+  }
+  clipSummary.textContent = `Clip: ${formatDisplayTimestamp(start)} → ${formatDisplayTimestamp(end)} (${formatDisplayTimestamp(end - start)})`;
+}
+
+function setClipBoundary(which, rawValue) {
+  const secs = parseTimestampInput(String(rawValue || ''));
+  if (secs === null || secs < 0) {
+    const input = which === 'start' ? clipStartInput : clipEndInput;
+    input.classList.add('input-error');
+    setTimeout(() => input.classList.remove('input-error'), 800);
+    return;
+  }
+  state.clipRange[which] = secs;
+  if (which === 'start') clipStartInput.value = formatDisplayTimestamp(secs);
+  else clipEndInput.value = formatDisplayTimestamp(secs);
+  renderClipControls();
+}
+
 frameTsAddBtn.addEventListener('click', addTimestamp);
 frameTsInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addTimestamp(); } });
 
@@ -444,6 +495,7 @@ urlInput.addEventListener('input', () => {
   state.downloadMeta = null;
   state.videoPreview = null;
   state.frameTimestamps = [];
+  state.clipRange = { start: null, end: null };
   state.extractedFrames = null;
   urlOptions.hidden = true;
   setUrlFeedback('');
@@ -451,6 +503,9 @@ urlInput.addEventListener('input', () => {
   transcribeBtn.disabled = true;
   clearTimeout(analyzeTimer);
   renderPlatformBadge(detectPlatform(url));
+  clipStartInput.value = '';
+  clipEndInput.value = '';
+  renderClipControls();
   renderPreviewPanel();
   if (!looksLikeUrl(url)) { setUrlSpinner(false); return; }
   setUrlSpinner(true);
@@ -527,8 +582,8 @@ function renderDownloadMeta(meta, url) {
   const kinds = [...new Set(meta.options.map(o => o.kind))];
   const hasVideo = kinds.includes('video');
   // Inject virtual 'frames' kind (timestamp-based frame extraction) when video is available
-  const displayKinds = [...kinds, ...(hasVideo ? ['frames'] : [])];
-  const kindLabel = k => ({ video: 'Video', audio: 'Audio', image: 'Image', mixed: 'Post media', frames: 'Images' }[k] || k);
+  const displayKinds = [...kinds, ...(hasVideo ? ['frames', 'clip'] : [])];
+  const kindLabel = k => ({ video: 'Video', audio: 'Audio', image: 'Image', mixed: 'Post media', frames: 'Images', clip: 'Clip' }[k] || k);
   downloadKind.innerHTML = displayKinds.map(k => `<option value="${k}">${kindLabel(k)}</option>`).join('');
   // Pre-seed timestamp list from URL if it has a ?t= param
   if (hasVideo && startSeconds > 0 && !state.frameTimestamps.includes(startSeconds)) {
@@ -548,11 +603,20 @@ function updateQualityOptions() {
   if (kind === 'frames') {
     qualityField.hidden = true;
     frameTools.hidden = false;
+    clipTools.hidden = true;
     renderTimestampList();
+    return;
+  }
+  if (kind === 'clip') {
+    qualityField.hidden = true;
+    frameTools.hidden = true;
+    clipTools.hidden = false;
+    renderClipControls();
     return;
   }
   qualityField.hidden = false;
   frameTools.hidden = true;
+  clipTools.hidden = true;
   const opts = state.downloadMeta.options.filter(o => o.kind === kind);
   downloadOption.innerHTML = opts.map(o => `<option value="${o.id}">${o.label}</option>`).join('');
 }
@@ -610,7 +674,7 @@ const JOB_ICONS = {
   'transcribe': '🎙', 'download-media': '⬇',
   'compress-pdf': '📄', 'pdf-to-images': '📑',
   'convert-image': '🖼', 'images-to-pdf': '📋',
-  'extract-frames': '🎞',
+  'extract-frames': '🎞', 'clip-video': '✂',
 };
 
 function renderJobCard(id) {
@@ -733,6 +797,39 @@ extractFramesBtn.addEventListener('click', () => {
   doIt();
 });
 
+clipStartInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); setClipBoundary('start', clipStartInput.value); }
+});
+clipEndInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); setClipBoundary('end', clipEndInput.value); }
+});
+clipStartInput.addEventListener('blur', () => {
+  if (clipStartInput.value.trim()) setClipBoundary('start', clipStartInput.value);
+});
+clipEndInput.addEventListener('blur', () => {
+  if (clipEndInput.value.trim()) setClipBoundary('end', clipEndInput.value);
+});
+clipStartCurrentBtn.addEventListener('click', () => {
+  if (!activePreviewVideo) return;
+  setClipBoundary('start', Math.round(activePreviewVideo.currentTime));
+});
+clipEndCurrentBtn.addEventListener('click', () => {
+  if (!activePreviewVideo) return;
+  setClipBoundary('end', Math.round(activePreviewVideo.currentTime));
+});
+clipVideoBtn.addEventListener('click', () => {
+  if (!state.downloadMeta) return;
+  const { start, end } = state.clipRange;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+  const videoOption = state.downloadMeta.options.find(o => o.kind === 'video');
+  if (!videoOption) return;
+  const label = `${state.downloadMeta?.title || state.url} · clip`;
+  const jobId = addJob({ type: 'clip-video', label, status: 'pending' });
+  const doIt = () => runClipJob(jobId, videoOption, start, end);
+  updateJob(jobId, { retryFn: doIt });
+  doIt();
+});
+
 async function runFrameJob(jobId, videoOption, format, timestamps) {
   updateJob(jobId, { status: 'processing', step: 'Downloading video…' });
   try {
@@ -753,6 +850,22 @@ async function runFrameJob(jobId, videoOption, format, timestamps) {
     const blobUrl = URL.createObjectURL(blob);
     updateJob(jobId, { status: 'done', step: null, blobUrl, filename });
     await showExtractedFrames(blob, filename, contentType, state.downloadMeta?.title);
+  } catch (err) {
+    updateJob(jobId, { status: 'error', step: null, errorMsg: err.message });
+  }
+}
+
+async function runClipJob(jobId, videoOption, startTime, endTime) {
+  updateJob(jobId, { status: 'processing', step: 'Downloading video…' });
+  try {
+    const fd = new FormData();
+    fd.append('url', state.url);
+    fd.append('kind', videoOption.kind);
+    fd.append('value', videoOption.id);
+    fd.append('start_time', String(startTime));
+    fd.append('end_time', String(endTime));
+    const { blob, filename } = await sendRequest('/api/clip-video', fd);
+    updateJob(jobId, { status: 'done', step: null, blobUrl: URL.createObjectURL(blob), filename });
   } catch (err) {
     updateJob(jobId, { status: 'error', step: null, errorMsg: err.message });
   }
@@ -1065,6 +1178,8 @@ function buildVideoPreview(preview) {
   }, { once: true });
   activePreviewVideo = video;
   frameTsCurrentBtn.disabled = false;
+  clipStartCurrentBtn.disabled = false;
+  clipEndCurrentBtn.disabled = false;
   header.querySelector('#video-preview-add-btn').addEventListener('click', () => addTimestampSeconds(video.currentTime));
   const qualitySelect = header.querySelector('#video-preview-quality-select');
   if (qualitySelect) {
@@ -1100,6 +1215,8 @@ function renderPreviewPanel() {
 
   activePreviewVideo = null;
   frameTsCurrentBtn.disabled = true;
+  clipStartCurrentBtn.disabled = true;
+  clipEndCurrentBtn.disabled = true;
 
   previewEmptyState.hidden = !isEmpty;
   previewContent.hidden    = isEmpty;

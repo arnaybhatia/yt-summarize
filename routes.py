@@ -993,6 +993,53 @@ def _extract_frames_at_timestamps(
     return archive_path, "frames.zip"
 
 
+def _clip_video_segment(
+    video_path: str,
+    *,
+    start_time: float,
+    end_time: float,
+    tmp_dir: str,
+) -> tuple[str, str]:
+    if start_time < 0:
+        raise ValueError("Clip start time must be 0 or greater.")
+    if end_time <= start_time:
+        raise ValueError("Clip end time must be greater than the start time.")
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise ValueError("ffmpeg is not installed on the server.")
+
+    output_path = os.path.join(tmp_dir, "clip.mp4")
+    duration = end_time - start_time
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-ss",
+        f"{start_time:.3f}",
+        "-i",
+        video_path,
+        "-t",
+        f"{duration:.3f}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-movflags",
+        "+faststart",
+        output_path,
+    ]
+    run = subprocess.run(cmd, capture_output=True, text=True)
+    if run.returncode != 0 or not os.path.exists(output_path):
+        raise ValueError(run.stderr.strip() or "Video clipping failed.")
+    return output_path, "clip.mp4"
+
+
 def _build_download_filename(title: str, suffix: str, ext: str) -> str:
     base = _sanitize_filename(title, "download")
     suffix_part = f"_{suffix}" if suffix else ""
@@ -1317,6 +1364,54 @@ def extract_frames():
             tmp_dir=tmp_dir,
         )
         download_name = _build_download_filename(title, "frames", output_name.rsplit(".", 1)[-1])
+        return _send_temp_file(tmp_dir, output_path, download_name)
+    except ValueError as e:
+        if tmp_dir:
+            _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        if tmp_dir:
+            _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/clip-video", methods=["POST"])
+def clip_video():
+    tmp_dir = None
+    try:
+        url, option, title = _resolve_request_option()
+        if not url:
+            return jsonify({"error": "No URL provided."}), 400
+        if not option:
+            return jsonify({"error": "No media option provided."}), 400
+        if option.get("kind") != "video":
+            return jsonify({"error": "Video clipping requires a video option."}), 400
+
+        try:
+            start_time = float(request.form.get("start_time", "").strip())
+            end_time = float(request.form.get("end_time", "").strip())
+        except ValueError:
+            return jsonify({"error": "Clip times must be valid numbers."}), 400
+
+        platform = _guess_platform(url)
+        if platform == "vsco" or option.get("id") in DIRECT_DOWNLOAD_OPTION_IDS:
+            tmp_dir, video_paths = _download_direct_video_files(_get_media_info(url))
+            video_path = video_paths[0] if video_paths else None
+        else:
+            tmp_dir, video_path, _filename = _download_with_ytdlp(url, option, title)
+            if os.path.splitext(video_path)[1].lower() == ".zip":
+                raise ValueError("Video clipping requires a single video download option.")
+
+        if not video_path:
+            raise ValueError("Could not download video for clipping.")
+
+        output_path, output_name = _clip_video_segment(
+            video_path,
+            start_time=start_time,
+            end_time=end_time,
+            tmp_dir=tmp_dir,
+        )
+        download_name = _build_download_filename(title, "clip", output_name.rsplit(".", 1)[-1])
         return _send_temp_file(tmp_dir, output_path, download_name)
     except ValueError as e:
         if tmp_dir:

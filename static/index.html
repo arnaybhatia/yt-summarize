@@ -98,6 +98,29 @@
                 <button class="btn btn-primary" id="extract-frames-btn" disabled>Extract</button>
               </div>
             </div>
+            <div class="secondary-actions" id="clip-tools" hidden>
+              <p class="frame-tools-hint">Choose a start and end time, then save that segment as a new video.</p>
+              <div class="clip-grid">
+                <label class="field">
+                  <span class="field-label">Start</span>
+                  <div class="clip-input-row">
+                    <input type="text" id="clip-start-input" class="text-input" placeholder="e.g. 0:30" autocomplete="off" />
+                    <button type="button" class="btn btn-secondary btn-sm" id="clip-start-current-btn" disabled>Use current</button>
+                  </div>
+                </label>
+                <label class="field">
+                  <span class="field-label">End</span>
+                  <div class="clip-input-row">
+                    <input type="text" id="clip-end-input" class="text-input" placeholder="e.g. 1:15" autocomplete="off" />
+                    <button type="button" class="btn btn-secondary btn-sm" id="clip-end-current-btn" disabled>Use current</button>
+                  </div>
+                </label>
+              </div>
+              <div class="ts-extract-bar">
+                <p class="clip-summary" id="clip-summary">Set a valid clip range.</p>
+                <button class="btn btn-primary" id="clip-video-btn" disabled>Save clip</button>
+              </div>
+            </div>
             <div class="video-progress" id="download-progress" hidden>
               <div class="progress-bar-track"><div class="progress-bar-fill"></div></div>
               <p class="progress-label" id="download-progress-label">Preparing…</p>
