@@ -294,7 +294,7 @@ def _base_ydl_opts() -> dict:
     return {
         "quiet": True,
         "no_warnings": True,
-        "noplaylist": False,
+        "noplaylist": True,
         "extract_flat": False,
         "http_headers": {"User-Agent": DEFAULT_UA},
     }
@@ -527,6 +527,43 @@ def _pick_progressive_format(
     )
 
 
+def _iter_progressive_formats(formats: list[dict], *, max_height: int | None = None) -> list[dict]:
+    candidates = []
+    seen = set()
+    for fmt in formats:
+        if fmt.get("vcodec") in {None, "none"}:
+            continue
+        if fmt.get("acodec") in {None, "none"}:
+            continue
+        if not fmt.get("url"):
+            continue
+        height = fmt.get("height") or 0
+        if max_height and height and height > max_height:
+            continue
+        key = (
+            fmt.get("format_id"),
+            fmt.get("ext"),
+            fmt.get("height"),
+            fmt.get("fps"),
+            fmt.get("url"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(fmt)
+
+    candidates.sort(
+        key=lambda fmt: (
+            fmt.get("height") or 0,
+            fmt.get("fps") or 0,
+            fmt.get("tbr") or 0,
+            fmt.get("filesize") or 0,
+        ),
+        reverse=True,
+    )
+    return candidates
+
+
 def _encode_preview_token(payload: dict) -> str:
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii")
@@ -553,32 +590,65 @@ def _build_preview_info(info: dict) -> dict | None:
             "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
             "mime_type": _guess_mime_type(direct_video.get("ext"), "video/mp4"),
             "label": "Original video preview",
+            "qualities": [
+                {
+                    "id": "original",
+                    "label": "Original",
+                    "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
+                    "mime_type": _guess_mime_type(direct_video.get("ext"), "video/mp4"),
+                }
+            ],
         }
 
     formats = info.get("formats") or []
-    preview_format = (
-        _pick_progressive_format(formats, ext="mp4", max_height=720)
-        or _pick_progressive_format(formats, max_height=720)
-        or _pick_progressive_format(formats, ext="mp4")
-        or _pick_progressive_format(formats)
-    )
-    if not preview_format:
+    preview_candidates = _iter_progressive_formats(formats, max_height=720)
+    if not preview_candidates:
         return None
 
-    mime_type = _guess_mime_type(preview_format.get("ext"), "video/mp4")
-    token = _encode_preview_token(
-        {
-            "url": preview_format["url"],
-            "http_headers": preview_format.get("http_headers") or {},
-            "mime_type": mime_type,
-        }
+    preview_qualities = []
+    seen_heights = set()
+    for fmt in preview_candidates:
+        height = fmt.get("height")
+        label = f"{height}p" if height else (fmt.get("ext") or "Source").upper()
+        quality_id = str(height or fmt.get("format_id") or len(preview_qualities) + 1)
+        if height and height in seen_heights:
+            continue
+        mime_type = _guess_mime_type(fmt.get("ext"), "video/mp4")
+        token = _encode_preview_token(
+            {
+                "url": fmt["url"],
+                "http_headers": fmt.get("http_headers") or {},
+                "mime_type": mime_type,
+            }
+        )
+        preview_qualities.append(
+            {
+                "id": quality_id,
+                "label": label,
+                "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
+                "mime_type": mime_type,
+                "height": height,
+            }
+        )
+        if height:
+            seen_heights.add(height)
+        if len(preview_qualities) >= 5:
+            break
+
+    if not preview_qualities:
+        return None
+
+    preview_format = next(
+        (item for item in preview_qualities if item.get("height") and item["height"] <= 480),
+        preview_qualities[0],
     )
     height = preview_format.get("height")
     return {
-        "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
-        "mime_type": mime_type,
+        "stream_url": preview_format["stream_url"],
+        "mime_type": preview_format["mime_type"],
         "label": f"Streaming preview ({height}p)" if height else "Streaming preview",
         "height": height,
+        "qualities": preview_qualities,
     }
 
 

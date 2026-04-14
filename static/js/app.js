@@ -44,7 +44,7 @@ const imageUrlCache = new Map(); // File object → object URL string
 const state = {
   url: '',
   downloadMeta: null,
-  videoPreview: null,      // { streamUrl, mimeType, startSeconds, title, label }
+  videoPreview: null,      // { streamUrl, mimeType, startSeconds, title, label, qualities, selectedQualityId }
   frameTimestamps: [],     // sorted array of seconds the user wants to extract
   extractedFrames: null,   // { frames: [{url, name}], title } after extraction
   modelReady: false,
@@ -405,6 +405,8 @@ function renderDownloadMeta(meta, url) {
   state.downloadMeta = meta;
   const youtubeMeta = parseYouTubeUrl(url || state.url);
   const startSeconds = youtubeMeta?.startSeconds || 0;
+  const qualities = meta.preview?.qualities || [];
+  const defaultQuality = qualities[0] || null;
   state.videoPreview = meta.preview
     ? {
         streamUrl: meta.preview.stream_url,
@@ -412,6 +414,8 @@ function renderDownloadMeta(meta, url) {
         label: meta.preview.label,
         startSeconds,
         title: meta.title || url,
+        qualities,
+        selectedQualityId: defaultQuality?.id || null,
       }
     : null;
   setUrlFeedback('');
@@ -914,15 +918,27 @@ function openFrameLightbox(url) {
   document.body.appendChild(overlay);
 }
 
-function buildVideoPreview({ streamUrl, mimeType, startSeconds, title, label }) {
+function buildVideoPreview(preview) {
+  const { streamUrl, mimeType, startSeconds, title, label, qualities = [], selectedQualityId } = preview;
   const section = document.createElement('div');
   section.className = 'video-preview';
 
   const header = document.createElement('div');
   header.className = 'preview-section-header';
+  const qualityMarkup = qualities.length > 1
+    ? `<label class="video-preview-quality">
+         <span>Preview quality</span>
+         <select id="video-preview-quality-select" class="select-input">
+           ${qualities.map(q => `<option value="${escHtml(q.id)}" ${q.id === selectedQualityId ? 'selected' : ''}>${escHtml(q.label)}</option>`).join('')}
+         </select>
+       </label>`
+    : '';
   header.innerHTML = `
     <p class="preview-section-title">${escHtml(label || 'Video preview')}</p>
-    <button class="btn btn-secondary btn-sm" type="button" id="video-preview-add-btn">+ Add current time</button>
+    <div class="video-preview-actions">
+      ${qualityMarkup}
+      <button class="btn btn-secondary btn-sm" type="button" id="video-preview-add-btn">+ Add current time</button>
+    </div>
   `;
   section.appendChild(header);
 
@@ -950,6 +966,26 @@ function buildVideoPreview({ streamUrl, mimeType, startSeconds, title, label }) 
   activePreviewVideo = video;
   frameTsCurrentBtn.disabled = false;
   header.querySelector('#video-preview-add-btn').addEventListener('click', () => addTimestampSeconds(video.currentTime));
+  const qualitySelect = header.querySelector('#video-preview-quality-select');
+  if (qualitySelect) {
+    qualitySelect.addEventListener('change', () => {
+      const next = qualities.find(q => q.id === qualitySelect.value);
+      if (!next) return;
+      const resumeAt = video.currentTime || startSeconds || 0;
+      const wasPaused = video.paused;
+      state.videoPreview = {
+        ...state.videoPreview,
+        streamUrl: next.stream_url,
+        mimeType: next.mime_type,
+        selectedQualityId: next.id,
+        startSeconds: resumeAt,
+      };
+      renderPreviewPanel();
+      if (!wasPaused) {
+        requestAnimationFrame(() => activePreviewVideo?.play().catch(() => {}));
+      }
+    });
+  }
   wrapper.appendChild(video);
   section.appendChild(wrapper);
   return section;

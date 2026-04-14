@@ -291,6 +291,26 @@ body {
 /* ── VIDEO PREVIEW ──────────────────────────────────────── */
 .video-preview { width: 100%; display: flex; flex-direction: column; gap: 14px; }
 
+.video-preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.video-preview-quality {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.video-preview-quality .select-input {
+  min-width: 110px;
+}
+
 .video-preview-wrapper {
   position: relative;
   width: 100%;
