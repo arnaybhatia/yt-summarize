@@ -406,11 +406,11 @@ function renderDownloadMeta(meta, url) {
   const youtubeMeta = parseYouTubeUrl(url || state.url);
   const startSeconds = youtubeMeta?.startSeconds || 0;
   const qualities = meta.preview?.qualities || [];
-  const defaultQuality = qualities[0] || null;
+  const defaultQuality = qualities.find(q => q.id === meta.preview?.default_quality_id) || qualities[0] || null;
   state.videoPreview = meta.preview
     ? {
-        streamUrl: meta.preview.stream_url,
-        mimeType: meta.preview.mime_type,
+        streamUrl: defaultQuality?.stream_url || meta.preview.stream_url,
+        mimeType: defaultQuality?.mime_type || meta.preview.mime_type,
         label: meta.preview.label,
         startSeconds,
         title: meta.title || url,

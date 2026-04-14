@@ -590,6 +590,7 @@ def _build_preview_info(info: dict) -> dict | None:
             "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
             "mime_type": _guess_mime_type(direct_video.get("ext"), "video/mp4"),
             "label": "Original video preview",
+            "default_quality_id": "original",
             "qualities": [
                 {
                     "id": "original",
@@ -638,9 +639,11 @@ def _build_preview_info(info: dict) -> dict | None:
     if not preview_qualities:
         return None
 
-    preview_format = next(
-        (item for item in preview_qualities if item.get("height") and item["height"] <= 480),
-        preview_qualities[0],
+    preview_format = (
+        next((item for item in preview_qualities if item.get("height") == 360), None)
+        or next((item for item in preview_qualities if item.get("height") and item["height"] < 360), None)
+        or next((item for item in reversed(preview_qualities) if item.get("height") and item["height"] > 360), None)
+        or preview_qualities[0]
     )
     height = preview_format.get("height")
     return {
@@ -648,6 +651,7 @@ def _build_preview_info(info: dict) -> dict | None:
         "mime_type": preview_format["mime_type"],
         "label": f"Streaming preview ({height}p)" if height else "Streaming preview",
         "height": height,
+        "default_quality_id": preview_format["id"],
         "qualities": preview_qualities,
     }
 
