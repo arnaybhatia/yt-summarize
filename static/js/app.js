@@ -68,6 +68,9 @@ const state = {
 const modelStatusBar    = document.getElementById('model-status-bar');
 const modelStatusText   = document.getElementById('model-status-text');
 const modelDeviceBadge  = document.getElementById('model-device-badge');
+const resetAppBtn       = document.getElementById('reset-app-btn');
+const themeLightBtn     = document.getElementById('theme-light-btn');
+const themeDarkBtn      = document.getElementById('theme-dark-btn');
 
 const urlInput          = document.getElementById('url-input');
 const platformIcon      = document.getElementById('platform-icon');
@@ -128,6 +131,7 @@ const browseBtn         = document.getElementById('browse-btn');
 const mobilePreviewFab  = document.getElementById('mobile-preview-fab');
 
 let activePreviewVideo  = null;
+const THEME_STORAGE_KEY = 'yt-summarize-theme';
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function uid() {
@@ -177,6 +181,98 @@ function triggerBlobDownload(blob, filename) {
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function setTheme(theme) {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.body.dataset.theme = normalized;
+  themeLightBtn.classList.toggle('active', normalized === 'light');
+  themeDarkBtn.classList.toggle('active', normalized === 'dark');
+  try { localStorage.setItem(THEME_STORAGE_KEY, normalized); } catch {}
+}
+
+function initializeTheme() {
+  let savedTheme = 'light';
+  try {
+    savedTheme = localStorage.getItem(THEME_STORAGE_KEY) || savedTheme;
+  } catch {}
+  setTheme(savedTheme);
+}
+
+function clearImageCaches() {
+  imageUrlCache.forEach(url => URL.revokeObjectURL(url));
+  imageUrlCache.clear();
+}
+
+function clearPdfCaches() {
+  pdfGridCache.clear();
+  pdfNavCache.clear();
+}
+
+function clearExtractedFrames() {
+  if (!state.extractedFrames?.frames?.length) return;
+  state.extractedFrames.frames.forEach(frame => {
+    if (frame?.url) URL.revokeObjectURL(frame.url);
+  });
+}
+
+function clearJobArtifacts() {
+  state.jobs.forEach(job => {
+    if (job?.blobUrl) URL.revokeObjectURL(job.blobUrl);
+  });
+}
+
+function resetAppState() {
+  activePreviewVideo = null;
+  clearImageCaches();
+  clearPdfCaches();
+  clearExtractedFrames();
+  clearJobArtifacts();
+
+  state.url = '';
+  state.downloadMeta = null;
+  state.videoPreview = null;
+  state.frameTimestamps = [];
+  state.extractedFrames = null;
+  state.uploadedImages = [];
+  state.uploadedPdfs = [];
+  state.imageAction = 'convert';
+  state.imageConvertFormat = 'jpg';
+  state.pdfAction = 'compress';
+  state.pdfCompressPreset = 'small';
+  state.pdfExportFormat = 'png';
+  state.pdfPageModes = {};
+  state.pdfPageSelections = {};
+  state.jobs = [];
+
+  urlInput.value = '';
+  fileInput.value = '';
+  frameTsInput.value = '';
+  frameFormat.value = 'jpg';
+  imgConvertFormat.value = 'jpg';
+  pdfCompressPreset.value = 'small';
+  pdfExportFormat.value = 'png';
+  urlOptions.hidden = true;
+  jobsSection.hidden = true;
+  jobsList.innerHTML = '';
+  setUrlSpinner(false);
+  setUrlFeedback('');
+  renderPlatformBadge(null);
+  dlPlatformBadge.className = 'platform-badge';
+  dlPlatformBadge.textContent = '';
+  urlMediaTitle.textContent = '';
+  downloadBtn.disabled = true;
+  transcribeBtn.disabled = !state.modelReady;
+  extractFramesBtn.disabled = true;
+  frameTsCurrentBtn.disabled = true;
+  previewPanel.classList.remove('open');
+  document.body.style.overflow = '';
+
+  setImageAction('convert');
+  setPdfAction('compress');
+  renderTimestampList();
+  renderLeftPanel();
+  renderPreviewPanel();
 }
 
 // ─── Platform detection ───────────────────────────────────────────────────────
@@ -231,6 +327,10 @@ function parseYouTubeUrl(url) {
     return null;
   }
 }
+
+themeLightBtn.addEventListener('click', () => setTheme('light'));
+themeDarkBtn.addEventListener('click', () => setTheme('dark'));
+resetAppBtn.addEventListener('click', resetAppState);
 
 function addTimestampSeconds(rawSeconds) {
   const secs = Math.max(0, Math.round(Number(rawSeconds) || 0));
@@ -1415,9 +1515,11 @@ async function processPdfsToImages() {
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 window.addEventListener('beforeunload', () => {
-  state.jobs.forEach(j => { if (j.blobUrl) URL.revokeObjectURL(j.blobUrl); });
-  imageUrlCache.forEach(url => URL.revokeObjectURL(url));
+  clearJobArtifacts();
+  clearExtractedFrames();
+  clearImageCaches();
 });
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
+initializeTheme();
 initializeServerMode();
