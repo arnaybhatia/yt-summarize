@@ -44,7 +44,7 @@ const imageUrlCache = new Map(); // File object → object URL string
 const state = {
   url: '',
   downloadMeta: null,
-  youtubeEmbed: null,      // { videoId, startSeconds } when a YouTube URL is loaded
+  videoPreview: null,      // { streamUrl, mimeType, startSeconds, title, label }
   frameTimestamps: [],     // sorted array of seconds the user wants to extract
   extractedFrames: null,   // { frames: [{url, name}], title } after extraction
   modelReady: false,
@@ -86,6 +86,7 @@ const qualityField      = document.getElementById('quality-field');
 const frameTools        = document.getElementById('frame-tools');
 const frameTsInput      = document.getElementById('frame-ts-input');
 const frameTsAddBtn     = document.getElementById('frame-ts-add-btn');
+const frameTsCurrentBtn = document.getElementById('frame-ts-current-btn');
 const frameTsList       = document.getElementById('frame-ts-list');
 const frameFormat       = document.getElementById('frame-format');
 const extractFramesBtn  = document.getElementById('extract-frames-btn');
@@ -125,6 +126,8 @@ const previewContent    = document.getElementById('preview-content');
 const previewCloseBtn   = document.getElementById('preview-close-btn');
 const browseBtn         = document.getElementById('browse-btn');
 const mobilePreviewFab  = document.getElementById('mobile-preview-fab');
+
+let activePreviewVideo  = null;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function uid() {
@@ -229,6 +232,15 @@ function parseYouTubeUrl(url) {
   }
 }
 
+function addTimestampSeconds(rawSeconds) {
+  const secs = Math.max(0, Math.round(Number(rawSeconds) || 0));
+  if (!state.frameTimestamps.includes(secs)) {
+    state.frameTimestamps.push(secs);
+    state.frameTimestamps.sort((a, b) => a - b);
+  }
+  renderTimestampList();
+}
+
 // ─── Timestamp picker helpers ────────────────────────────────────────────────
 function parseTimestampInput(s) {
   s = s.trim().replace(/[^0-9:]/g, '');
@@ -276,14 +288,15 @@ function addTimestamp() {
     setTimeout(() => frameTsInput.classList.remove('input-error'), 800);
     return;
   }
-  if (!state.frameTimestamps.includes(secs)) {
-    state.frameTimestamps.push(secs);
-    state.frameTimestamps.sort((a, b) => a - b);
-  }
+  addTimestampSeconds(secs);
   frameTsInput.value = '';
   frameTsInput.focus();
-  renderTimestampList();
 }
+
+frameTsCurrentBtn.addEventListener('click', () => {
+  if (!activePreviewVideo) return;
+  addTimestampSeconds(activePreviewVideo.currentTime);
+});
 
 frameTsList.addEventListener('click', e => {
   const btn = e.target.closest('.ts-remove');
@@ -329,7 +342,7 @@ urlInput.addEventListener('input', () => {
   const url = urlInput.value.trim();
   state.url = url;
   state.downloadMeta = null;
-  state.youtubeEmbed = null;
+  state.videoPreview = null;
   state.frameTimestamps = [];
   state.extractedFrames = null;
   urlOptions.hidden = true;
@@ -390,7 +403,17 @@ async function autoAnalyzeUrl(url) {
 
 function renderDownloadMeta(meta, url) {
   state.downloadMeta = meta;
-  state.youtubeEmbed = parseYouTubeUrl(url || state.url);
+  const youtubeMeta = parseYouTubeUrl(url || state.url);
+  const startSeconds = youtubeMeta?.startSeconds || 0;
+  state.videoPreview = meta.preview
+    ? {
+        streamUrl: meta.preview.stream_url,
+        mimeType: meta.preview.mime_type,
+        label: meta.preview.label,
+        startSeconds,
+        title: meta.title || url,
+      }
+    : null;
   setUrlFeedback('');
   urlMediaTitle.textContent = meta.title || url;
   renderPreviewPanel();
@@ -404,12 +427,9 @@ function renderDownloadMeta(meta, url) {
   const kindLabel = k => ({ video: 'Video', audio: 'Audio', image: 'Image', mixed: 'Post media', frames: 'Images' }[k] || k);
   downloadKind.innerHTML = displayKinds.map(k => `<option value="${k}">${kindLabel(k)}</option>`).join('');
   // Pre-seed timestamp list from URL if it has a ?t= param
-  if (hasVideo && state.youtubeEmbed?.startSeconds > 0) {
-    const t = state.youtubeEmbed.startSeconds;
-    if (!state.frameTimestamps.includes(t)) {
-      state.frameTimestamps = [t];
-      renderTimestampList();
-    }
+  if (hasVideo && startSeconds > 0 && !state.frameTimestamps.includes(startSeconds)) {
+    state.frameTimestamps = [startSeconds];
+    renderTimestampList();
   }
   updateQualityOptions();
   downloadKind.onchange = updateQualityOptions;
@@ -733,13 +753,13 @@ previewCloseBtn.addEventListener('click', () => {
 
 function updateMobileFab() {
   const count = state.uploadedImages.length + state.uploadedPdfs.length;
-  const hasMedia = count > 0 || !!state.youtubeEmbed || !!state.extractedFrames;
+  const hasMedia = count > 0 || !!state.videoPreview || !!state.extractedFrames;
   mobilePreviewFab.hidden = !hasMedia;
   if (count > 0) {
     mobilePreviewFab.textContent = `View preview (${count} file${count!==1?'s':''})`;
   } else if (state.extractedFrames) {
     mobilePreviewFab.textContent = 'View extracted frames';
-  } else if (state.youtubeEmbed) {
+  } else if (state.videoPreview) {
     mobilePreviewFab.textContent = 'View video';
   }
 }
@@ -894,20 +914,43 @@ function openFrameLightbox(url) {
   document.body.appendChild(overlay);
 }
 
-function buildYouTubePreview({ videoId, startSeconds }) {
+function buildVideoPreview({ streamUrl, mimeType, startSeconds, title, label }) {
   const section = document.createElement('div');
-  section.className = 'youtube-preview';
-  let embedUrl = `https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1`;
-  if (startSeconds > 0) embedUrl += `&start=${startSeconds}`;
+  section.className = 'video-preview';
+
+  const header = document.createElement('div');
+  header.className = 'preview-section-header';
+  header.innerHTML = `
+    <p class="preview-section-title">${escHtml(label || 'Video preview')}</p>
+    <button class="btn btn-secondary btn-sm" type="button" id="video-preview-add-btn">+ Add current time</button>
+  `;
+  section.appendChild(header);
+
   const wrapper = document.createElement('div');
-  wrapper.className = 'youtube-embed-wrapper';
-  const iframe = document.createElement('iframe');
-  iframe.src = embedUrl;
-  iframe.title = 'YouTube video player';
-  iframe.setAttribute('frameborder', '0');
-  iframe.setAttribute('allowfullscreen', '');
-  iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
-  wrapper.appendChild(iframe);
+  wrapper.className = 'video-preview-wrapper';
+  const video = document.createElement('video');
+  video.controls = true;
+  video.preload = 'metadata';
+  video.playsInline = true;
+  video.crossOrigin = 'anonymous';
+  video.title = title || 'Video preview';
+  if (mimeType) {
+    const source = document.createElement('source');
+    source.src = streamUrl;
+    source.type = mimeType;
+    video.appendChild(source);
+  } else {
+    video.src = streamUrl;
+  }
+  video.addEventListener('loadedmetadata', () => {
+    if (startSeconds > 0 && Number.isFinite(video.duration)) {
+      video.currentTime = Math.min(startSeconds, Math.max(video.duration - 0.25, 0));
+    }
+  }, { once: true });
+  activePreviewVideo = video;
+  frameTsCurrentBtn.disabled = false;
+  header.querySelector('#video-preview-add-btn').addEventListener('click', () => addTimestampSeconds(video.currentTime));
+  wrapper.appendChild(video);
   section.appendChild(wrapper);
   return section;
 }
@@ -915,9 +958,12 @@ function buildYouTubePreview({ videoId, startSeconds }) {
 function renderPreviewPanel() {
   const hasImages  = state.uploadedImages.length > 0;
   const hasPdfs    = state.uploadedPdfs.length > 0;
-  const hasYouTube = !!state.youtubeEmbed;
+  const hasVideo   = !!state.videoPreview;
   const hasFrames  = !!state.extractedFrames;
-  const isEmpty    = !hasImages && !hasPdfs && !hasYouTube && !hasFrames;
+  const isEmpty    = !hasImages && !hasPdfs && !hasVideo && !hasFrames;
+
+  activePreviewVideo = null;
+  frameTsCurrentBtn.disabled = true;
 
   previewEmptyState.hidden = !isEmpty;
   previewContent.hidden    = isEmpty;
@@ -933,9 +979,9 @@ function renderPreviewPanel() {
     return;
   }
 
-  // YouTube player (shown when no uploaded files and no frames)
-  if (hasYouTube && !hasImages && !hasPdfs) {
-    previewContent.appendChild(buildYouTubePreview(state.youtubeEmbed));
+  // Video player (shown when no uploaded files and no frames)
+  if (hasVideo && !hasImages && !hasPdfs) {
+    previewContent.appendChild(buildVideoPreview(state.videoPreview));
     return;
   }
 

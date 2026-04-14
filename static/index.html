@@ -73,10 +73,11 @@
               </button>
             </div>
             <div class="secondary-actions" id="frame-tools" hidden>
-              <p class="frame-tools-hint">Scrub the video preview, note the time, then add it below.</p>
+              <p class="frame-tools-hint">Scrub the preview and add timestamps manually or straight from the player.</p>
               <div class="ts-add-row">
                 <input type="text" id="frame-ts-input" class="text-input" placeholder="e.g. 1:23 or 0:45" autocomplete="off" />
                 <button type="button" class="btn btn-secondary btn-sm" id="frame-ts-add-btn">+ Add</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="frame-ts-current-btn" disabled>Add current time</button>
               </div>
               <ul id="frame-ts-list" class="ts-list" hidden></ul>
               <div class="ts-extract-bar">

@@ -1,14 +1,17 @@
+import base64
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 
 import yt_dlp
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 from werkzeug.utils import secure_filename
 
 try:
@@ -394,6 +397,25 @@ def _build_audio_options() -> list[dict]:
     ]
 
 
+def _guess_mime_type(ext: str | None, fallback: str = "application/octet-stream") -> str:
+    ext = (ext or "").lower()
+    return {
+        "mp4": "video/mp4",
+        "webm": "video/webm",
+        "mov": "video/quicktime",
+        "mkv": "video/x-matroska",
+        "m4v": "video/mp4",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+        "mp3": "audio/mpeg",
+        "m4a": "audio/mp4",
+        "wav": "audio/wav",
+        "ogg": "audio/ogg",
+    }.get(ext, fallback)
+
+
 def _entry_ext(entry: dict) -> str:
     url = entry.get("url", "")
     parsed = urllib.parse.urlparse(url)
@@ -468,6 +490,96 @@ def _collect_media_entries(info: dict) -> list[dict]:
             }
         )
     return [entry for entry in collected if entry.get("url")]
+
+
+def _pick_progressive_format(
+    formats: list[dict],
+    *,
+    ext: str | None = None,
+    max_height: int | None = None,
+) -> dict | None:
+    candidates = []
+    for fmt in formats:
+        if fmt.get("vcodec") in {None, "none"}:
+            continue
+        if fmt.get("acodec") in {None, "none"}:
+            continue
+        if not fmt.get("url"):
+            continue
+        if ext and fmt.get("ext") != ext:
+            continue
+        height = fmt.get("height") or 0
+        if max_height and height and height > max_height:
+            continue
+        candidates.append(fmt)
+
+    if not candidates:
+        return None
+
+    return max(
+        candidates,
+        key=lambda fmt: (
+            fmt.get("height") or 0,
+            fmt.get("fps") or 0,
+            fmt.get("tbr") or 0,
+            fmt.get("filesize") or 0,
+        ),
+    )
+
+
+def _encode_preview_token(payload: dict) -> str:
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_preview_token(token: str) -> dict:
+    padded = token + "=" * (-len(token) % 4)
+    raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    return json.loads(raw.decode("utf-8"))
+
+
+def _build_preview_info(info: dict) -> dict | None:
+    entries = _collect_media_entries(info)
+    direct_video = next((entry for entry in entries if entry.get("media_type") == "video"), None)
+    if direct_video:
+        token = _encode_preview_token(
+            {
+                "url": direct_video["url"],
+                "http_headers": direct_video.get("http_headers") or {},
+                "mime_type": _guess_mime_type(direct_video.get("ext"), "video/mp4"),
+            }
+        )
+        return {
+            "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
+            "mime_type": _guess_mime_type(direct_video.get("ext"), "video/mp4"),
+            "label": "Original video preview",
+        }
+
+    formats = info.get("formats") or []
+    preview_format = (
+        _pick_progressive_format(formats, ext="mp4", max_height=720)
+        or _pick_progressive_format(formats, max_height=720)
+        or _pick_progressive_format(formats, ext="mp4")
+        or _pick_progressive_format(formats)
+    )
+    if not preview_format:
+        return None
+
+    mime_type = _guess_mime_type(preview_format.get("ext"), "video/mp4")
+    token = _encode_preview_token(
+        {
+            "url": preview_format["url"],
+            "http_headers": preview_format.get("http_headers") or {},
+            "mime_type": mime_type,
+        }
+    )
+    height = preview_format.get("height")
+    return {
+        "stream_url": f"/api/video-preview?token={urllib.parse.quote(token)}",
+        "mime_type": mime_type,
+        "label": f"Streaming preview ({height}p)" if height else "Streaming preview",
+        "height": height,
+    }
 
 
 def _append_media_bucket_options(options: list[dict], entries: list[dict], prefix: str = "media") -> None:
@@ -611,6 +723,7 @@ def _build_media_options(url: str) -> dict:
         "title": info.get("title") or "Media",
         "platform": platform,
         "is_gallery": has_gallery,
+        "preview": _build_preview_info(info),
         "options": options,
         "transcription_recommendation": (
             "Browser Whisper is faster on most setups. Raspberry Pi transcription is available if whisper.cpp is installed."
@@ -956,6 +1069,47 @@ def media_options():
 
     try:
         return jsonify(_build_media_options(url))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/video-preview", methods=["GET"])
+def video_preview():
+    token = str(request.args.get("token", "")).strip()
+    if not token:
+        return jsonify({"error": "Missing preview token."}), 400
+
+    try:
+        payload = _decode_preview_token(token)
+        source_url = str(payload.get("url", "")).strip()
+        if not source_url:
+            return jsonify({"error": "Preview token is invalid."}), 400
+
+        upstream_headers = {"User-Agent": DEFAULT_UA, **(payload.get("http_headers") or {})}
+        range_header = request.headers.get("Range")
+        if range_header:
+            upstream_headers["Range"] = range_header
+
+        req = urllib.request.Request(source_url, headers=upstream_headers)
+        upstream = urllib.request.urlopen(req, timeout=60)
+
+        status_code = getattr(upstream, "status", 200) or 200
+        response = Response(
+            stream_with_context(iter(lambda: upstream.read(64 * 1024), b"")),
+            status=status_code,
+            mimetype=str(payload.get("mime_type") or upstream.headers.get_content_type() or "video/mp4"),
+            direct_passthrough=True,
+        )
+
+        for header in ("Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"):
+            value = upstream.headers.get(header)
+            if value:
+                response.headers[header] = value
+        response.headers.setdefault("Accept-Ranges", "bytes")
+        response.call_on_close(upstream.close)
+        return response
+    except urllib.error.HTTPError as e:
+        return jsonify({"error": e.reason or "Preview request failed."}), e.code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
