@@ -932,6 +932,48 @@ body[data-theme="dark"] {
 
 .page-loading-msg { font-size: 0.78rem; color: var(--text-muted); padding: 20px 0; text-align: center; width: 100%; }
 
+.pdf-preview-selector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pdf-preview-selector-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pdf-preview-select {
+  min-width: min(100%, 320px);
+  max-width: 100%;
+}
+
+.pdf-preview-file {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pdf-preview-file-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pdf-preview-file-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── JOBS PANEL ─────────────────────────────────────────── */
 #jobs-section { display: flex; flex-direction: column; gap: 8px; }
 

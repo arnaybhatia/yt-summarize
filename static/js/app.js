@@ -59,6 +59,7 @@ const state = {
   pdfAction: 'compress',
   pdfCompressPreset: 'small',
   pdfExportFormat: 'png',
+  activePdfPreview: null,  // filename of the PDF currently shown in the preview tab
   pdfPageModes: {},       // { [filename]: 'all' | 'select' }
   pdfPageSelections: {},  // { [filename]: Set<number> }
 
@@ -250,6 +251,7 @@ function resetAppState() {
   state.pdfAction = 'compress';
   state.pdfCompressPreset = 'small';
   state.pdfExportFormat = 'png';
+  state.activePdfPreview = null;
   state.pdfPageModes = {};
   state.pdfPageSelections = {};
   state.jobs = [];
@@ -936,7 +938,11 @@ function appendFiles(newFiles) {
   const pdfs   = newFiles.filter(f => /\.pdf$/i.test(f.name));
   const dedup  = (ex, inc) => inc.filter(n => !ex.some(e => e.name===n.name && e.size===n.size));
   state.uploadedImages.push(...dedup(state.uploadedImages, images));
-  state.uploadedPdfs.push(...dedup(state.uploadedPdfs, pdfs));
+  const addedPdfs = dedup(state.uploadedPdfs, pdfs);
+  state.uploadedPdfs.push(...addedPdfs);
+  if (!state.activePdfPreview && state.uploadedPdfs.length) {
+    state.activePdfPreview = state.uploadedPdfs[0].name;
+  }
   renderLeftPanel();
   renderPreviewPanel();
 }
@@ -1035,6 +1041,9 @@ function removePdf(i) {
   delete state.pdfPageModes[file.name];
   delete state.pdfPageSelections[file.name];
   state.uploadedPdfs.splice(i, 1);
+  if (state.activePdfPreview === file.name) {
+    state.activePdfPreview = state.uploadedPdfs[0]?.name || null;
+  }
   renderLeftPanel();
   renderPreviewPanel();
 }
@@ -1085,6 +1094,7 @@ clearImagesBtn.addEventListener('click', () => {
 clearPdfsBtn.addEventListener('click', () => {
   state.uploadedPdfs.forEach(f => { pdfGridCache.delete(f.name); pdfNavCache.delete(f.name); });
   state.uploadedPdfs = [];
+  state.activePdfPreview = null;
   state.pdfPageModes = {};
   state.pdfPageSelections = {};
   renderLeftPanel(); renderPreviewPanel();
@@ -1345,78 +1355,114 @@ function buildPdfPagesSection() {
   const section = document.createElement('div');
   section.className = 'preview-section';
 
+  const activeFile = state.uploadedPdfs.find(file => file.name === state.activePdfPreview) || state.uploadedPdfs[0] || null;
+  if (!activeFile) return section;
+  state.activePdfPreview = activeFile.name;
+
   const hdr = document.createElement('div');
   hdr.className = 'preview-section-header';
   hdr.innerHTML = `<p class="preview-section-title">${state.uploadedPdfs.length} PDF${state.uploadedPdfs.length!==1?'s':''}</p>`;
   section.appendChild(hdr);
 
-  state.uploadedPdfs.forEach(file => {
-    if (!state.pdfPageModes[file.name]) {
-      state.pdfPageModes[file.name] = 'all';
-      state.pdfPageSelections[file.name] = new Set();
-    }
+  if (state.uploadedPdfs.length > 1) {
+    const selectorWrap = document.createElement('div');
+    selectorWrap.className = 'pdf-preview-selector';
 
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'margin-bottom:24px';
+    const selectorLabel = document.createElement('label');
+    selectorLabel.className = 'pdf-preview-selector-label';
+    selectorLabel.setAttribute('for', 'pdf-preview-select');
+    selectorLabel.textContent = 'Showing';
 
-    // Per-file header: filename + All/Select toggle
-    const fileHdr = document.createElement('div');
-    fileHdr.style.cssText = 'display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap';
+    const selector = document.createElement('select');
+    selector.id = 'pdf-preview-select';
+    selector.className = 'select-input pdf-preview-select';
 
-    const fname = document.createElement('p');
-    fname.style.cssText = 'font-size:.82rem;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    fname.textContent = file.name;
-
-    const toggle = document.createElement('div');
-    toggle.className = 'page-mode-toggle';
-    const mode = state.pdfPageModes[file.name];
-
-    const allBtn = document.createElement('button');
-    allBtn.type = 'button';
-    allBtn.className = `page-mode-btn ${mode==='all'?'active':''}`;
-    allBtn.textContent = 'All pages';
-
-    const selBtn = document.createElement('button');
-    selBtn.type = 'button';
-    selBtn.className = `page-mode-btn ${mode==='select'?'active':''}`;
-    selBtn.textContent = 'Select pages';
-
-    allBtn.addEventListener('click', () => {
-      state.pdfPageModes[file.name] = 'all';
-      state.pdfPageSelections[file.name].clear();
-      allBtn.classList.add('active');
-      selBtn.classList.remove('active');
-      wrap.querySelectorAll('.page-thumb').forEach(t => t.classList.remove('selected'));
-      wrap.querySelectorAll('.pdf-page-nav-btn').forEach(t => t.classList.remove('selected'));
+    state.uploadedPdfs.forEach(file => {
+      const option = document.createElement('option');
+      option.value = file.name;
+      option.textContent = file.name;
+      selector.appendChild(option);
     });
 
-    selBtn.addEventListener('click', () => {
-      state.pdfPageModes[file.name] = 'select';
-      selBtn.classList.add('active');
-      allBtn.classList.remove('active');
+    selector.value = activeFile.name;
+    selector.addEventListener('change', () => {
+      state.activePdfPreview = selector.value;
+      renderPreviewPanel();
     });
 
-    toggle.appendChild(allBtn); toggle.appendChild(selBtn);
-    fileHdr.appendChild(fname); fileHdr.appendChild(toggle);
-    wrap.appendChild(fileHdr);
+    selectorWrap.appendChild(selectorLabel);
+    selectorWrap.appendChild(selector);
+    section.appendChild(selectorWrap);
+  }
 
-    // Page grid + nav — use cache so we don't re-render PDF.js on every state change
-    let grid = pdfGridCache.get(file.name);
-    let nav  = pdfNavCache.get(file.name);
-    if (!grid) {
-      nav  = document.createElement('div');
-      nav.className = 'pdf-page-nav';
-      grid = document.createElement('div');
-      grid.className = 'preview-page-grid';
-      pdfGridCache.set(file.name, grid);
-      pdfNavCache.set(file.name, nav);
-      loadPdfPagesIntoGrid(file, grid, nav);
-    }
+  const file = activeFile;
+  if (!state.pdfPageModes[file.name]) {
+    state.pdfPageModes[file.name] = 'all';
+    state.pdfPageSelections[file.name] = new Set();
+  }
 
-    wrap.appendChild(nav);
-    wrap.appendChild(grid);
-    section.appendChild(wrap);
+  const wrap = document.createElement('div');
+  wrap.className = 'pdf-preview-file';
+
+  // Per-file header: filename + All/Select toggle
+  const fileHdr = document.createElement('div');
+  fileHdr.className = 'pdf-preview-file-header';
+
+  const fname = document.createElement('p');
+  fname.className = 'pdf-preview-file-name';
+  fname.textContent = file.name;
+
+  const toggle = document.createElement('div');
+  toggle.className = 'page-mode-toggle';
+  const mode = state.pdfPageModes[file.name];
+
+  const allBtn = document.createElement('button');
+  allBtn.type = 'button';
+  allBtn.className = `page-mode-btn ${mode==='all'?'active':''}`;
+  allBtn.textContent = 'All pages';
+
+  const selBtn = document.createElement('button');
+  selBtn.type = 'button';
+  selBtn.className = `page-mode-btn ${mode==='select'?'active':''}`;
+  selBtn.textContent = 'Select pages';
+
+  allBtn.addEventListener('click', () => {
+    state.pdfPageModes[file.name] = 'all';
+    state.pdfPageSelections[file.name].clear();
+    allBtn.classList.add('active');
+    selBtn.classList.remove('active');
+    wrap.querySelectorAll('.page-thumb').forEach(t => t.classList.remove('selected'));
+    wrap.querySelectorAll('.pdf-page-nav-btn').forEach(t => t.classList.remove('selected'));
   });
+
+  selBtn.addEventListener('click', () => {
+    state.pdfPageModes[file.name] = 'select';
+    selBtn.classList.add('active');
+    allBtn.classList.remove('active');
+  });
+
+  toggle.appendChild(allBtn);
+  toggle.appendChild(selBtn);
+  fileHdr.appendChild(fname);
+  fileHdr.appendChild(toggle);
+  wrap.appendChild(fileHdr);
+
+  // Page grid + nav — use cache so we don't re-render PDF.js on every state change
+  let grid = pdfGridCache.get(file.name);
+  let nav  = pdfNavCache.get(file.name);
+  if (!grid) {
+    nav  = document.createElement('div');
+    nav.className = 'pdf-page-nav';
+    grid = document.createElement('div');
+    grid.className = 'preview-page-grid';
+    pdfGridCache.set(file.name, grid);
+    pdfNavCache.set(file.name, nav);
+    loadPdfPagesIntoGrid(file, grid, nav);
+  }
+
+  wrap.appendChild(nav);
+  wrap.appendChild(grid);
+  section.appendChild(wrap);
 
   return section;
 }
