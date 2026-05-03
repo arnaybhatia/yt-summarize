@@ -192,6 +192,39 @@ function triggerBlobDownload(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+
+  const active = document.activeElement;
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-9999px';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  }
+
+  document.body.removeChild(textarea);
+  if (active && typeof active.focus === 'function') active.focus();
+  return copied;
+}
+
 function setTheme(theme) {
   const normalized = theme === 'dark' ? 'dark' : 'light';
   document.body.dataset.theme = normalized;
@@ -742,7 +775,7 @@ function renderJobCard(id) {
   card.innerHTML = `<div class="job-card-top">${iconHtml}<div class="job-body"><p class="job-label">${escHtml(job.label)}</p>${statusText}</div>${actionsHtml}</div>${transcriptHtml}`;
 }
 
-jobsList.addEventListener('click', e => {
+jobsList.addEventListener('click', async e => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const { action, id, view } = btn.dataset;
@@ -758,8 +791,8 @@ jobsList.addEventListener('click', e => {
   if (action === 'set-view') updateJob(id, { transcriptView: view });
   if (action === 'copy-transcript') {
     const text = job.transcriptView === 'plain' ? job.transcript.plain : job.transcript.timestamped;
-    navigator.clipboard?.writeText(text).catch(() => {});
-    btn.textContent = '✓ Copied';
+    const copied = await copyTextToClipboard(text);
+    btn.textContent = copied ? '✓ Copied' : 'Copy failed';
     setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
   }
   if (action === 'dl-transcript') {
