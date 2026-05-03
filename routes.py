@@ -291,13 +291,27 @@ def _guess_platform(url: str, extractor_key: str | None = None) -> str:
 
 
 def _base_ydl_opts() -> dict:
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "extract_flat": False,
         "http_headers": {"User-Agent": DEFAULT_UA},
     }
+
+    cookie_file = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+    if cookie_file:
+        if not os.path.exists(cookie_file):
+            raise ValueError(f"YTDLP_COOKIES_FILE does not exist: {cookie_file}")
+        opts["cookiefile"] = cookie_file
+
+    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    if cookies_from_browser:
+        # Accept "browser" or "browser:profile" to mirror the common yt-dlp CLI shape.
+        browser_parts = [part.strip() or None for part in cookies_from_browser.split(":", 1)]
+        opts["cookiesfrombrowser"] = tuple(browser_parts)
+
+    return opts
 
 
 def _fetch_yt_info(url: str) -> dict:

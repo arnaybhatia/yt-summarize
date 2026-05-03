@@ -95,6 +95,22 @@ Environment=WHISPER_CPP_BIN=/home/strifedeeno/whisper.cpp/build/bin/whisper-cli
 Environment=WHISPER_CPP_MODEL=/home/strifedeeno/whisper.cpp/models/ggml-base.en.bin
 ```
 
+## Instagram Cookies
+
+Instagram often blocks unauthenticated `yt-dlp` requests with login-required or rate-limit errors. Export a Netscape-format cookies file from a browser where Instagram is logged in, copy it to the Pi, and set:
+
+```bash
+export YTDLP_COOKIES_FILE=/home/strifedeeno/instagram-cookies.txt
+```
+
+For systemd, add:
+
+```ini
+Environment=YTDLP_COOKIES_FILE=/home/strifedeeno/instagram-cookies.txt
+```
+
+Alternatively, when the app runs on a machine with the logged-in browser profile, set `YTDLP_COOKIES_FROM_BROWSER` to a `yt-dlp` browser name such as `firefox` or `chrome`.
+
 ## Notes
 
 - `yt-dlp` site support can change over time, especially for Instagram, TikTok, and VSCO.
