@@ -142,6 +142,7 @@ const mobilePreviewFab  = document.getElementById('mobile-preview-fab');
 let activePreviewVideo  = null;
 const THEME_STORAGE_KEY = 'yt-summarize-theme';
 const JOB_HISTORY_LIMIT = 200;
+let jobPollTimer = null;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function uid() {
@@ -261,11 +262,6 @@ function normalizeRestoredJob(job) {
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     ...job,
   };
-  if (restored.status === 'pending' || restored.status === 'processing') {
-    restored.status = 'error';
-    restored.step = null;
-    restored.errorMsg = 'This task was interrupted before it finished.';
-  }
   if (restored.artifactSaved && !restored.artifactUrl) {
     restored.artifactUrl = `/api/jobs/${encodeURIComponent(restored.id)}/artifact`;
   }
@@ -296,20 +292,67 @@ async function persistJob(job, artifactBlob = null) {
 }
 
 async function restoreJobHistory() {
+  await syncJobHistory();
+  startJobPolling();
+}
+
+function renderAllJobs() {
+  const openTranscriptIds = new Set(
+    [...jobsList.querySelectorAll('.job-card.transcript-open')].map(card => card.dataset.jobId),
+  );
+  jobsSection.hidden = state.jobs.length === 0;
+  jobsList.innerHTML = '';
+  [...state.jobs].reverse().forEach(job => renderJobCard(job.id));
+  openTranscriptIds.forEach(id => {
+    const card = jobsList.querySelector(`[data-job-id="${id}"]`);
+    const transcript = card?.querySelector('.job-transcript');
+    const toggle = card?.querySelector('[data-action="toggle-transcript"]');
+    if (card && transcript) {
+      card.classList.add('transcript-open');
+      transcript.hidden = false;
+      if (toggle) toggle.textContent = 'Hide';
+    }
+  });
+}
+
+async function syncJobHistory() {
   try {
     const res = await fetch('/api/jobs');
     if (!res.ok) return;
     const data = await res.json();
     const jobs = Array.isArray(data.jobs) ? data.jobs : [];
     state.jobs = jobs.slice(0, JOB_HISTORY_LIMIT).map(normalizeRestoredJob);
-    if (state.jobs.length) {
-      jobsSection.hidden = false;
-      jobsList.innerHTML = '';
-      [...state.jobs].reverse().forEach(job => renderJobCard(job.id));
-    }
+    renderAllJobs();
   } catch {
     // The app remains usable without saved history.
   }
+}
+
+function startJobPolling() {
+  if (jobPollTimer) return;
+  jobPollTimer = setInterval(syncJobHistory, 2000);
+}
+
+function upsertServerJob(job) {
+  const restored = normalizeRestoredJob(job);
+  const index = state.jobs.findIndex(item => item.id === restored.id);
+  if (index >= 0) state.jobs[index] = restored;
+  else state.jobs.unshift(restored);
+  state.jobs = state.jobs.slice(0, JOB_HISTORY_LIMIT);
+  renderAllJobs();
+}
+
+async function startServerJob(endpoint, formData) {
+  const res = await fetch(endpoint, { method: 'POST', body: formData });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Server error ${res.status}`);
+  }
+  const data = await res.json();
+  if (data.job) upsertServerJob(data.job);
+  startJobPolling();
+  setTimeout(syncJobHistory, 500);
+  return data.job;
 }
 
 function clearImageCaches() {
@@ -890,22 +933,21 @@ jobsList.addEventListener('click', async e => {
 });
 
 // ─── Download / Transcribe ────────────────────────────────────────────────────
-downloadBtn.addEventListener('click', () => {
+downloadBtn.addEventListener('click', async () => {
   if (!state.downloadMeta) return;
-  const label = state.downloadMeta.title || state.url;
-  const jobId = addJob({ type: 'download-media', label, status: 'pending' });
-  const doIt = () => runFileJob(jobId, async () => {
+  try {
     const fd = new FormData();
     fd.append('url', state.url);
     fd.append('kind', downloadKind.value);
     fd.append('value', downloadOption.value);
-    return sendRequest('/api/download-media', fd);
-  });
-  updateJob(jobId, { retryFn: doIt });
-  doIt();
+    fd.append('label', state.downloadMeta.title || state.url);
+    await startServerJob('/api/jobs/start/download-media', fd);
+  } catch (err) {
+    setUrlFeedback(err.message || 'Could not start download.');
+  }
 });
 
-extractFramesBtn.addEventListener('click', () => {
+extractFramesBtn.addEventListener('click', async () => {
   if (!state.frameTimestamps.length || !state.downloadMeta) return;
   // Use the best available video option for frame extraction
   const videoOption = state.downloadMeta.options.find(o => o.kind === 'video');
@@ -913,10 +955,17 @@ extractFramesBtn.addEventListener('click', () => {
   const format = frameFormat.value === 'png' ? 'png' : 'jpg';
   const label = `${state.downloadMeta?.title || state.url} · frames`;
   const timestamps = [...state.frameTimestamps];
-  const jobId = addJob({ type: 'extract-frames', label, status: 'pending' });
-  const doIt = () => runFrameJob(jobId, videoOption, format, timestamps);
-  updateJob(jobId, { retryFn: doIt });
-  doIt();
+  try {
+    const fd = new FormData();
+    fd.append('url', state.url);
+    fd.append('value', videoOption.id);
+    fd.append('target_format', format);
+    fd.append('timestamps', timestamps.join(','));
+    fd.append('label', label);
+    await startServerJob('/api/jobs/start/extract-frames', fd);
+  } catch (err) {
+    setUrlFeedback(err.message || 'Could not start frame extraction.');
+  }
 });
 
 clipStartInput.addEventListener('keydown', e => {
@@ -939,17 +988,24 @@ clipEndCurrentBtn.addEventListener('click', () => {
   if (!activePreviewVideo) return;
   setClipBoundary('end', Math.round(activePreviewVideo.currentTime));
 });
-clipVideoBtn.addEventListener('click', () => {
+clipVideoBtn.addEventListener('click', async () => {
   if (!state.downloadMeta) return;
   const { start, end } = state.clipRange;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
   const videoOption = state.downloadMeta.options.find(o => o.kind === 'video');
   if (!videoOption) return;
   const label = `${state.downloadMeta?.title || state.url} · clip`;
-  const jobId = addJob({ type: 'clip-video', label, status: 'pending' });
-  const doIt = () => runClipJob(jobId, videoOption, start, end);
-  updateJob(jobId, { retryFn: doIt });
-  doIt();
+  try {
+    const fd = new FormData();
+    fd.append('url', state.url);
+    fd.append('value', videoOption.id);
+    fd.append('start_time', String(start));
+    fd.append('end_time', String(end));
+    fd.append('label', label);
+    await startServerJob('/api/jobs/start/clip-video', fd);
+  } catch (err) {
+    setUrlFeedback(err.message || 'Could not start clip export.');
+  }
 });
 
 async function runFrameJob(jobId, videoOption, format, timestamps) {
@@ -1033,13 +1089,16 @@ async function showExtractedFrames(blob, filename, contentType, title) {
   renderPreviewPanel();
 }
 
-transcribeBtn.addEventListener('click', () => {
+transcribeBtn.addEventListener('click', async () => {
   if (!looksLikeUrl(state.url)) return;
-  const label = state.downloadMeta?.title || state.url;
-  const jobId = addJob({ type: 'transcribe', label, status: 'pending' });
-  const doIt = () => runTranscribeJob(jobId, state.url);
-  updateJob(jobId, { retryFn: doIt });
-  doIt();
+  try {
+    const fd = new FormData();
+    fd.append('url', state.url);
+    fd.append('label', state.downloadMeta?.title || state.url);
+    await startServerJob('/api/jobs/start/transcribe', fd);
+  } catch (err) {
+    setUrlFeedback(err.message || 'Could not start transcription.');
+  }
 });
 
 async function runTranscribeJob(jobId, url) {
@@ -1746,24 +1805,27 @@ imagesSubmitBtn.addEventListener('click', () => {
 async function processConvertImages() {
   const files  = [...state.uploadedImages];
   const format = imgConvertFormat.value;
-  const jobIds = files.map(f => addJob({ type: 'convert-image', label: `${f.name} → ${format.toUpperCase()}`, status: 'pending' }));
-  await Promise.all(files.map((file, i) => {
-    const doIt = () => runFileJob(jobIds[i], async () => {
-      const fd = new FormData(); fd.append('files', file, file.name); fd.append('target_format', format);
-      return sendRequest('/api/tools/image-convert', fd);
-    });
-    updateJob(jobIds[i], { retryFn: doIt }); return doIt();
-  }));
+  try {
+    await Promise.all(files.map(file => {
+      const fd = new FormData();
+      fd.append('files', file, file.name);
+      fd.append('target_format', format);
+      return startServerJob('/api/jobs/start/tools/image-convert', fd);
+    }));
+  } catch (err) {
+    alert(err.message || 'Could not start image conversion.');
+  }
 }
 
 async function processImagesToPdf() {
   const files = [...state.uploadedImages];
-  const jobId = addJob({ type: 'images-to-pdf', label: `${files.length} images → PDF`, status: 'pending' });
-  const doIt  = () => runFileJob(jobId, async () => {
-    const fd = new FormData(); files.forEach(f => fd.append('files', f, f.name));
-    return sendRequest('/api/tools/images-to-pdf', fd);
-  });
-  updateJob(jobId, { retryFn: doIt }); doIt();
+  try {
+    const fd = new FormData();
+    files.forEach(f => fd.append('files', f, f.name));
+    await startServerJob('/api/jobs/start/tools/images-to-pdf', fd);
+  } catch (err) {
+    alert(err.message || 'Could not start PDF creation.');
+  }
 }
 
 // ─── Process PDFs ─────────────────────────────────────────────────────────────
@@ -1775,14 +1837,16 @@ pdfsSubmitBtn.addEventListener('click', () => {
 async function processCompressPdfs() {
   const files  = [...state.uploadedPdfs];
   const preset = pdfCompressPreset.value;
-  const jobIds = files.map(f => addJob({ type: 'compress-pdf', label: f.name, status: 'pending' }));
-  await Promise.all(files.map((file, i) => {
-    const doIt = () => runFileJob(jobIds[i], async () => {
-      const fd = new FormData(); fd.append('file', file, file.name); fd.append('preset', preset);
-      return sendRequest('/api/tools/compress-pdf', fd);
-    });
-    updateJob(jobIds[i], { retryFn: doIt }); return doIt();
-  }));
+  try {
+    await Promise.all(files.map(file => {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('preset', preset);
+      return startServerJob('/api/jobs/start/tools/compress-pdf', fd);
+    }));
+  } catch (err) {
+    alert(err.message || 'Could not start PDF compression.');
+  }
 }
 
 async function processPdfsToImages() {
@@ -1797,10 +1861,11 @@ async function processPdfsToImages() {
     }
   }
 
-  const jobIds = files.map(f => addJob({ type: 'pdf-to-images', label: f.name, status: 'pending' }));
-  await Promise.all(files.map((file, i) => {
-    const doIt = () => runFileJob(jobIds[i], async () => {
-      const fd = new FormData(); fd.append('file', file, file.name); fd.append('target_format', format);
+  try {
+    await Promise.all(files.map(file => {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('target_format', format);
       const mode = state.pdfPageModes[file.name] || 'all';
       if (mode === 'all') {
         fd.append('mode', 'all');
@@ -1808,10 +1873,11 @@ async function processPdfsToImages() {
         const pages = [...state.pdfPageSelections[file.name]].sort((a,b)=>a-b);
         fd.append('mode', 'pages'); fd.append('page', pages.join(','));
       }
-      return sendRequest('/api/tools/pdf-to-images', fd);
-    });
-    updateJob(jobIds[i], { retryFn: doIt }); return doIt();
-  }));
+      return startServerJob('/api/jobs/start/tools/pdf-to-images', fd);
+    }));
+  } catch (err) {
+    alert(err.message || 'Could not start PDF export.');
+  }
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────

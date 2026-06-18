@@ -21,7 +21,7 @@ Everything runs on the Raspberry Pi:
 - Image format conversion for `jpg/jpeg`, `png`, and `webp`.
 - PDF page export to `png` or `jpg`, either one page or all pages.
 - PDF compression with `smaller files` and `higher quality` presets.
-- Persistent task history with saved transcripts and completed downloadable outputs.
+- Server-side background tasks with persistent shared history, saved transcripts, and completed downloadable outputs.
 
 ## Dependencies
 
@@ -84,7 +84,8 @@ http://<raspberry-pi-ip>:5000/
 - Accepted document uploads: `pdf`
 - Multi-file image conversions download as a `.zip`
 - PDF page export returns one image for single-page mode and a `.zip` for all-pages mode
-- Task history is stored in `data/task-history` by default, or in `TASK_HISTORY_DIR` when set.
+- Background task history is shared across browsers and stored in `data/task-history` by default, or in `TASK_HISTORY_DIR` when set.
+- `TASK_WORKER_COUNT` controls how many server-side tasks can run at once; the default is `2`.
 - `Smaller files` compression is more aggressive and may reduce image quality
 - `Higher quality` compression keeps more detail but may reduce file size less
 - If Ghostscript is missing, the PDF compression endpoint returns a dependency error

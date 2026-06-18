@@ -1,13 +1,17 @@
 import base64
+import concurrent.futures
 import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 
 import yt_dlp
@@ -36,6 +40,9 @@ TASK_HISTORY_DIR = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "task-history"),
 )
 TASK_HISTORY_FILE = "jobs.json"
+TASK_WORKER_COUNT = int(os.getenv("TASK_WORKER_COUNT", "2"))
+TASK_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, TASK_WORKER_COUNT))
+TASK_HISTORY_LOCK = threading.RLock()
 
 MEDIA_URL_RE = re.compile(r"https://[^\"'<>\\]+")
 VSCO_MEDIA_HINT_RE = re.compile(r"\.(?:jpg|jpeg|png|webp|mp4)(?:\?|$)", re.IGNORECASE)
@@ -83,23 +90,25 @@ def _task_history_path() -> str:
 
 
 def _load_task_history() -> list[dict]:
-    path = _task_history_path()
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            jobs = json.load(f)
-        return jobs if isinstance(jobs, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
+    with TASK_HISTORY_LOCK:
+        path = _task_history_path()
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                jobs = json.load(f)
+            return jobs if isinstance(jobs, list) else []
+        except (OSError, json.JSONDecodeError):
+            return []
 
 
 def _save_task_history(jobs: list[dict]) -> None:
-    path = _task_history_path()
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(jobs, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+    with TASK_HISTORY_LOCK:
+        path = _task_history_path()
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(jobs, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
 
 
 def _safe_job_id(value: str) -> str:
@@ -146,12 +155,111 @@ def _job_artifact_path(job_id: str, filename: str) -> str:
 
 
 def _upsert_task_history(job: dict) -> dict:
-    jobs = _load_task_history()
-    without_job = [item for item in jobs if item.get("id") != job["id"]]
-    without_job.append(job)
-    without_job.sort(key=lambda item: item.get("createdAt") or item.get("updatedAt") or "")
-    _save_task_history(without_job[-200:])
+    with TASK_HISTORY_LOCK:
+        jobs = _load_task_history()
+        without_job = [item for item in jobs if item.get("id") != job["id"]]
+        without_job.append(job)
+        without_job.sort(key=lambda item: item.get("createdAt") or item.get("updatedAt") or "")
+        _save_task_history(without_job[-200:])
     return job
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _create_task_job(job_type: str, label: str) -> dict:
+    now = _now_iso()
+    job = {
+        "id": uuid.uuid4().hex,
+        "type": job_type,
+        "label": label,
+        "status": "pending",
+        "step": "Queued...",
+        "filename": None,
+        "artifactUrl": None,
+        "artifactSaved": False,
+        "transcript": None,
+        "transcriptView": "timestamped",
+        "errorMsg": None,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    return _upsert_task_history(job)
+
+
+def _get_task_job(job_id: str) -> dict | None:
+    safe_id = _safe_job_id(job_id)
+    return next((item for item in _load_task_history() if item.get("id") == safe_id), None)
+
+
+def _update_task_job(job_id: str, **patch) -> dict | None:
+    with TASK_HISTORY_LOCK:
+        jobs = _load_task_history()
+        for job in jobs:
+            if job.get("id") == job_id:
+                job.update(patch)
+                job["updatedAt"] = _now_iso()
+                _save_task_history(jobs)
+                return job
+    return None
+
+
+def _save_job_artifact(job_id: str, source_path: str, filename: str) -> str:
+    safe_id = _safe_job_id(job_id)
+    safe_name = _sanitize_filename(filename, "download")
+    artifact_dir = os.path.join(TASK_HISTORY_DIR, safe_id)
+    os.makedirs(artifact_dir, exist_ok=True)
+    destination = _job_artifact_path(safe_id, safe_name)
+    shutil.copyfile(source_path, destination)
+    return safe_name
+
+
+def _finish_artifact_job(job_id: str, tmp_dir: str, file_path: str, filename: str) -> None:
+    try:
+        safe_name = _save_job_artifact(job_id, file_path, filename)
+        _update_task_job(
+            job_id,
+            status="done",
+            step=None,
+            filename=safe_name,
+            artifactUrl=f"/api/jobs/{urllib.parse.quote(job_id)}/artifact",
+            artifactSaved=True,
+            errorMsg=None,
+        )
+    finally:
+        _cleanup_dir(tmp_dir)
+
+
+def _run_background_job(job_id: str, worker) -> None:
+    _update_task_job(job_id, status="processing", step="Starting...", errorMsg=None)
+    try:
+        worker(job_id)
+    except Exception as e:
+        _update_task_job(job_id, status="error", step=None, errorMsg=str(e))
+
+
+def _submit_background_job(job: dict, worker) -> dict:
+    TASK_EXECUTOR.submit(_run_background_job, job["id"], worker)
+    return job
+
+
+def _mark_interrupted_jobs() -> None:
+    with TASK_HISTORY_LOCK:
+        jobs = _load_task_history()
+        changed = False
+        for job in jobs:
+            if job.get("status") in {"pending", "processing"}:
+                job["status"] = "error"
+                job["step"] = None
+                job["errorMsg"] = "This task was interrupted when the server restarted."
+                job["updatedAt"] = _now_iso()
+                changed = True
+        if changed:
+            _save_task_history(jobs)
+
+
+_mark_interrupted_jobs()
 
 
 def _cleanup_dir(path: str) -> None:
@@ -1283,6 +1391,183 @@ def _resolve_request_option() -> tuple[str, dict, str]:
     return url, {}, "download"
 
 
+def _resolve_media_option(url: str, option_value: str, option_kind: str = "") -> tuple[dict, str]:
+    meta = _build_media_options(url)
+    option = next((item for item in meta.get("options", []) if item.get("id") == option_value), {})
+    if option_kind and option and option.get("kind") != option_kind:
+        option = {}
+    return option, str(meta.get("title") or "download")
+
+
+def _format_timecode(seconds: float) -> str:
+    total_ms = max(0, round(float(seconds or 0) * 1000))
+    hours = total_ms // 3600000
+    minutes = (total_ms % 3600000) // 60000
+    secs = (total_ms % 60000) / 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+
+def _format_timestamped_transcript(chunks: list[dict]) -> str:
+    lines = []
+    for chunk in chunks:
+        start, end = (chunk.get("timestamp") or [0, 0])[:2]
+        text = str(chunk.get("text") or "").strip()
+        if text:
+            lines.append(f"[{_format_timecode(start)} --> {_format_timecode(end)}] {text}")
+    return "\n".join(lines)
+
+
+def _run_download_media_job(job_id: str, url: str, option_value: str, option_kind: str) -> None:
+    _update_task_job(job_id, step="Resolving media...")
+    option, title = _resolve_media_option(url, option_value, option_kind)
+    if not option:
+        raise ValueError("No download option provided.")
+
+    _update_task_job(job_id, label=title, step="Downloading media...")
+    platform = _guess_platform(url)
+    if platform == "vsco":
+        tmp_dir, file_path, filename = _download_vsco_media(url, option, title)
+    elif option.get("id") in DIRECT_DOWNLOAD_OPTION_IDS:
+        tmp_dir, file_path, filename = _download_direct_media_entries(_get_media_info(url), option, title)
+    else:
+        tmp_dir, file_path, filename = _download_with_ytdlp(url, option, title)
+    _finish_artifact_job(job_id, tmp_dir, file_path, filename)
+
+
+def _run_transcribe_job(job_id: str, url: str) -> None:
+    tmp_dir = None
+    try:
+        _update_task_job(job_id, step="Fetching audio...")
+        tmp_dir, audio_path, title = _download_audio_source(url)
+        _update_task_job(job_id, label=title, step="Transcribing on Pi...")
+        result = _run_pi_whisper(audio_path)
+        _update_task_job(
+            job_id,
+            status="done",
+            step=None,
+            transcript={
+                "plain": result.get("text") or "",
+                "timestamped": _format_timestamped_transcript(result.get("chunks") or []),
+            },
+            transcriptView="timestamped",
+            errorMsg=None,
+        )
+    finally:
+        if tmp_dir:
+            _cleanup_dir(tmp_dir)
+
+
+def _download_video_for_job(url: str, option: dict, title: str) -> tuple[str, str]:
+    platform = _guess_platform(url)
+    if platform == "vsco" or option.get("id") in DIRECT_DOWNLOAD_OPTION_IDS:
+        tmp_dir, video_paths = _download_direct_video_files(_get_media_info(url))
+        video_path = video_paths[0] if video_paths else None
+    else:
+        tmp_dir, video_path, _filename = _download_with_ytdlp(url, option, title)
+        if os.path.splitext(video_path)[1].lower() == ".zip":
+            _cleanup_dir(tmp_dir)
+            raise ValueError("This task requires a single video download option.")
+    if not video_path:
+        _cleanup_dir(tmp_dir)
+        raise ValueError("Could not download video.")
+    return tmp_dir, video_path
+
+
+def _run_extract_frames_job(job_id: str, url: str, option_value: str, target_format: str, timestamps: list[float]) -> None:
+    _update_task_job(job_id, step="Resolving video...")
+    option, title = _resolve_media_option(url, option_value, "video")
+    if not option:
+        raise ValueError("Frame extraction requires a video option.")
+    if target_format not in FRAME_IMAGE_FORMATS:
+        target_format = "jpg"
+    if not timestamps:
+        raise ValueError("At least one timestamp is required.")
+
+    _update_task_job(job_id, label=f"{title} · frames", step="Downloading video...")
+    tmp_dir, video_path = _download_video_for_job(url, option, title)
+    try:
+        _update_task_job(job_id, step="Extracting frames...")
+        output_path, output_name = _extract_frames_at_timestamps(
+            video_path,
+            timestamps=timestamps,
+            target_format=target_format,
+            tmp_dir=tmp_dir,
+        )
+        download_name = _build_download_filename(title, "frames", output_name.rsplit(".", 1)[-1])
+        _finish_artifact_job(job_id, tmp_dir, output_path, download_name)
+    except Exception:
+        _cleanup_dir(tmp_dir)
+        raise
+
+
+def _run_clip_video_job(job_id: str, url: str, option_value: str, start_time: float, end_time: float) -> None:
+    _update_task_job(job_id, step="Resolving video...")
+    option, title = _resolve_media_option(url, option_value, "video")
+    if not option:
+        raise ValueError("Video clipping requires a video option.")
+
+    _update_task_job(job_id, label=f"{title} · clip", step="Downloading video...")
+    tmp_dir, video_path = _download_video_for_job(url, option, title)
+    try:
+        _update_task_job(job_id, step="Saving clip...")
+        output_path, output_name = _clip_video_segment(
+            video_path,
+            start_time=start_time,
+            end_time=end_time,
+            tmp_dir=tmp_dir,
+        )
+        download_name = _build_download_filename(title, "clip", output_name.rsplit(".", 1)[-1])
+        _finish_artifact_job(job_id, tmp_dir, output_path, download_name)
+    except Exception:
+        _cleanup_dir(tmp_dir)
+        raise
+
+
+def _run_image_convert_job(job_id: str, upload: dict, target_format: str, tmp_dir: str) -> None:
+    try:
+        _update_task_job(job_id, step="Converting image...")
+        base = os.path.splitext(upload["filename"])[0]
+        out_name = f"{base}.{target_format}"
+        out_path = os.path.join(tmp_dir, out_name)
+        _convert_image_file(upload["path"], target_format, out_path)
+        _finish_artifact_job(job_id, tmp_dir, out_path, out_name)
+    except Exception:
+        _cleanup_dir(tmp_dir)
+        raise
+
+
+def _run_images_to_pdf_job(job_id: str, uploads: list[dict], order: str, tmp_dir: str) -> None:
+    try:
+        _update_task_job(job_id, step="Building PDF...")
+        ordered = _parse_ordered_uploads(uploads, order)
+        pdf_path = os.path.join(tmp_dir, "images.pdf")
+        _images_to_pdf(ordered, pdf_path)
+        _finish_artifact_job(job_id, tmp_dir, pdf_path, "images.pdf")
+    except Exception:
+        _cleanup_dir(tmp_dir)
+        raise
+
+
+def _run_pdf_to_images_job(job_id: str, upload: dict, target_format: str, mode: str, page_value: str, tmp_dir: str) -> None:
+    try:
+        _update_task_job(job_id, step="Exporting PDF pages...")
+        output_path, download_name = _pdf_to_images(upload["path"], target_format, mode, page_value, tmp_dir)
+        _finish_artifact_job(job_id, tmp_dir, output_path, download_name)
+    except Exception:
+        _cleanup_dir(tmp_dir)
+        raise
+
+
+def _run_compress_pdf_job(job_id: str, upload: dict, preset: str, tmp_dir: str) -> None:
+    try:
+        _update_task_job(job_id, step="Compressing PDF...")
+        output_path, download_name = _compress_pdf(upload["path"], preset, tmp_dir)
+        _finish_artifact_job(job_id, tmp_dir, output_path, download_name)
+    except Exception:
+        _cleanup_dir(tmp_dir)
+        raise
+
+
 @api.route("/api/media-options", methods=["POST"])
 def media_options():
     data = request.get_json()
@@ -1343,6 +1628,165 @@ def job_artifact(job_id):
         return send_file(path, as_attachment=True, download_name=job["filename"], conditional=True, etag=False)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+
+
+def _queued_response(job: dict):
+    return jsonify({"job": job}), 202
+
+
+@api.route("/api/jobs/start/download-media", methods=["POST"])
+def start_download_media_job():
+    url = str(request.form.get("url", "")).strip()
+    option_value = str(request.form.get("value", "")).strip()
+    option_kind = str(request.form.get("kind", "")).strip().lower()
+    label = str(request.form.get("label", "")).strip() or url or "Media download"
+    if not url:
+        return jsonify({"error": "No URL provided."}), 400
+    if not option_value:
+        return jsonify({"error": "No download option provided."}), 400
+
+    job = _create_task_job("download-media", label)
+    _submit_background_job(job, lambda job_id: _run_download_media_job(job_id, url, option_value, option_kind))
+    return _queued_response(job)
+
+
+@api.route("/api/jobs/start/transcribe", methods=["POST"])
+def start_transcribe_job():
+    url = str(request.form.get("url", "")).strip()
+    label = str(request.form.get("label", "")).strip() or url or "Transcription"
+    if not url:
+        return jsonify({"error": "No URL provided."}), 400
+
+    job = _create_task_job("transcribe", label)
+    _submit_background_job(job, lambda job_id: _run_transcribe_job(job_id, url))
+    return _queued_response(job)
+
+
+@api.route("/api/jobs/start/extract-frames", methods=["POST"])
+def start_extract_frames_job():
+    url = str(request.form.get("url", "")).strip()
+    option_value = str(request.form.get("value", "")).strip()
+    target_format = request.form.get("target_format", "jpg").strip().lower()
+    timestamps_raw = request.form.get("timestamps", "").strip()
+    label = str(request.form.get("label", "")).strip() or "Extract frames"
+    if not url:
+        return jsonify({"error": "No URL provided."}), 400
+    if not option_value:
+        return jsonify({"error": "No media option provided."}), 400
+    try:
+        timestamps = [float(t.strip()) for t in timestamps_raw.split(",") if t.strip()]
+    except ValueError:
+        return jsonify({"error": "Invalid timestamps format."}), 400
+    if not timestamps:
+        return jsonify({"error": "No valid timestamps provided."}), 400
+
+    job = _create_task_job("extract-frames", label)
+    _submit_background_job(
+        job,
+        lambda job_id: _run_extract_frames_job(job_id, url, option_value, target_format, timestamps),
+    )
+    return _queued_response(job)
+
+
+@api.route("/api/jobs/start/clip-video", methods=["POST"])
+def start_clip_video_job():
+    url = str(request.form.get("url", "")).strip()
+    option_value = str(request.form.get("value", "")).strip()
+    label = str(request.form.get("label", "")).strip() or "Video clip"
+    if not url:
+        return jsonify({"error": "No URL provided."}), 400
+    if not option_value:
+        return jsonify({"error": "No media option provided."}), 400
+    try:
+        start_time = float(request.form.get("start_time", "").strip())
+        end_time = float(request.form.get("end_time", "").strip())
+    except ValueError:
+        return jsonify({"error": "Clip times must be valid numbers."}), 400
+
+    job = _create_task_job("clip-video", label)
+    _submit_background_job(
+        job,
+        lambda job_id: _run_clip_video_job(job_id, url, option_value, start_time, end_time),
+    )
+    return _queued_response(job)
+
+
+@api.route("/api/jobs/start/tools/image-convert", methods=["POST"])
+def start_image_convert_job():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        target_format = request.form.get("target_format", "").strip().lower()
+        if target_format not in CONVERTIBLE_IMAGE_FORMATS:
+            raise ValueError("Target format must be jpg, png, or webp.")
+        uploads = _save_uploads(request.files.getlist("files"), IMAGE_EXTENSIONS, tmp_dir, "image")
+        upload = uploads[0]
+        label = f"{upload['filename']} → {target_format.upper()}"
+        job = _create_task_job("convert-image", label)
+        _submit_background_job(job, lambda job_id: _run_image_convert_job(job_id, upload, target_format, tmp_dir))
+        return _queued_response(job)
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/jobs/start/tools/images-to-pdf", methods=["POST"])
+def start_images_to_pdf_job():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        uploads = _save_uploads(request.files.getlist("files"), IMAGE_EXTENSIONS, tmp_dir, "image")
+        order = request.form.get("order", "")
+        label = f"{len(uploads)} images → PDF"
+        job = _create_task_job("images-to-pdf", label)
+        _submit_background_job(job, lambda job_id: _run_images_to_pdf_job(job_id, uploads, order, tmp_dir))
+        return _queued_response(job)
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/jobs/start/tools/pdf-to-images", methods=["POST"])
+def start_pdf_to_images_job():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        upload = _save_single_upload("file", PDF_EXTENSIONS, tmp_dir, "document.pdf")
+        target_format = request.form.get("target_format", "").strip().lower()
+        mode = request.form.get("mode", "").strip().lower()
+        page_value = request.form.get("page", "").strip()
+        job = _create_task_job("pdf-to-images", upload["filename"])
+        _submit_background_job(
+            job,
+            lambda job_id: _run_pdf_to_images_job(job_id, upload, target_format, mode, page_value, tmp_dir),
+        )
+        return _queued_response(job)
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/jobs/start/tools/compress-pdf", methods=["POST"])
+def start_compress_pdf_job():
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        upload = _save_single_upload("file", PDF_EXTENSIONS, tmp_dir, "document.pdf")
+        preset = request.form.get("preset", "").strip().lower()
+        job = _create_task_job("compress-pdf", upload["filename"])
+        _submit_background_job(job, lambda job_id: _run_compress_pdf_job(job_id, upload, preset, tmp_dir))
+        return _queued_response(job)
+    except ValueError as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _cleanup_dir(tmp_dir)
+        return jsonify({"error": str(e)}), 500
 
 
 @api.route("/api/video-preview", methods=["GET"])
