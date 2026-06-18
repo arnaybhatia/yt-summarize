@@ -660,6 +660,12 @@ body[data-theme="dark"] {
 .url-input:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
 .url-input::placeholder { color: var(--text-muted); }
 
+.url-hint {
+  margin-top: 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 .url-input-spinner {
   position: absolute; right: 76px;
   width: 14px; height: 14px;
