@@ -141,6 +141,7 @@ const mobilePreviewFab  = document.getElementById('mobile-preview-fab');
 
 let activePreviewVideo  = null;
 const THEME_STORAGE_KEY = 'yt-summarize-theme';
+const JOB_HISTORY_LIMIT = 200;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function uid() {
@@ -239,6 +240,76 @@ function initializeTheme() {
     savedTheme = localStorage.getItem(THEME_STORAGE_KEY) || savedTheme;
   } catch {}
   setTheme(savedTheme);
+}
+
+function jobForPersistence(job) {
+  if (!job) return null;
+  const {
+    retryFn: _retryFn,
+    blobUrl: _blobUrl,
+    ...persistable
+  } = job;
+  return persistable;
+}
+
+function normalizeRestoredJob(job) {
+  const restored = {
+    id: uid(), type: 'generic', label: '', status: 'pending',
+    step: null, blobUrl: null, filename: null, artifactUrl: null, artifactSaved: false,
+    transcript: null, transcriptView: 'timestamped',
+    errorMsg: null, retryFn: null,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    ...job,
+  };
+  if (restored.status === 'pending' || restored.status === 'processing') {
+    restored.status = 'error';
+    restored.step = null;
+    restored.errorMsg = 'This task was interrupted before it finished.';
+  }
+  if (restored.artifactSaved && !restored.artifactUrl) {
+    restored.artifactUrl = `/api/jobs/${encodeURIComponent(restored.id)}/artifact`;
+  }
+  return restored;
+}
+
+async function persistJob(job, artifactBlob = null) {
+  const payload = jobForPersistence(job);
+  if (!payload) return;
+
+  try {
+    if (artifactBlob) {
+      const fd = new FormData();
+      fd.append('job', JSON.stringify(payload));
+      fd.append('artifact', artifactBlob, payload.filename || 'download');
+      await fetch('/api/jobs', { method: 'POST', body: fd });
+      return;
+    }
+
+    await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job: payload }),
+    });
+  } catch {
+    // History sync should never break the active task flow.
+  }
+}
+
+async function restoreJobHistory() {
+  try {
+    const res = await fetch('/api/jobs');
+    if (!res.ok) return;
+    const data = await res.json();
+    const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+    state.jobs = jobs.slice(0, JOB_HISTORY_LIMIT).map(normalizeRestoredJob);
+    if (state.jobs.length) {
+      jobsSection.hidden = false;
+      jobsList.innerHTML = '';
+      [...state.jobs].reverse().forEach(job => renderJobCard(job.id));
+    }
+  } catch {
+    // The app remains usable without saved history.
+  }
 }
 
 function clearImageCaches() {
@@ -675,31 +746,46 @@ async function sendRequest(endpoint, formData) {
 
 // ─── Job system ───────────────────────────────────────────────────────────────
 function addJob(partial) {
+  const now = new Date().toISOString();
   const job = {
     id: uid(), type: 'generic', label: '', status: 'pending',
-    step: null, blobUrl: null, filename: null,
+    step: null, blobUrl: null, filename: null, artifactUrl: null, artifactSaved: false,
     transcript: null, transcriptView: 'timestamped',
     errorMsg: null, retryFn: null,
+    createdAt: now, updatedAt: now,
     ...partial,
   };
-  state.jobs.push(job);
+  state.jobs.unshift(job);
+  state.jobs = state.jobs.slice(0, JOB_HISTORY_LIMIT);
   jobsSection.hidden = false;
   renderJobCard(job.id);
+  persistJob(job);
   return job.id;
 }
 
-function updateJob(id, patch) {
+function updateJob(id, patch, options = {}) {
   const job = state.jobs.find(j => j.id === id);
   if (!job) return;
-  Object.assign(job, patch);
+  Object.assign(job, patch, { updatedAt: new Date().toISOString() });
   renderJobCard(id);
+  persistJob(job, options.artifactBlob || null);
 }
 
 async function runFileJob(jobId, fn) {
   updateJob(jobId, { status: 'processing', step: 'Processing…' });
   try {
     const { blob, filename } = await fn();
-    updateJob(jobId, { status: 'done', step: null, blobUrl: URL.createObjectURL(blob), filename });
+    updateJob(
+      jobId,
+      {
+        status: 'done', step: null,
+        blobUrl: URL.createObjectURL(blob),
+        filename,
+        artifactUrl: `/api/jobs/${encodeURIComponent(jobId)}/artifact`,
+        artifactSaved: true,
+      },
+      { artifactBlob: blob },
+    );
   } catch (err) {
     updateJob(jobId, { status: 'error', step: null, errorMsg: err.message });
   }
@@ -745,8 +831,9 @@ function renderJobCard(id) {
   else statusText = `<p class="job-status-text error">${escHtml(job.errorMsg||'Error')}</p>`;
 
   let actionsHtml = '';
-  if (job.status === 'done' && job.blobUrl) {
-    actionsHtml = `<div class="job-actions"><a class="btn btn-primary btn-sm" href="${job.blobUrl}" download="${escHtml(job.filename||'download')}">⬇</a></div>`;
+  const downloadHref = job.blobUrl || job.artifactUrl;
+  if (job.status === 'done' && downloadHref) {
+    actionsHtml = `<div class="job-actions"><a class="btn btn-primary btn-sm" href="${escHtml(downloadHref)}" download="${escHtml(job.filename||'download')}">⬇</a></div>`;
   } else if (job.status === 'done' && job.transcript) {
     actionsHtml = `<div class="job-actions"><button class="btn btn-secondary btn-sm" data-action="toggle-transcript" data-id="${id}">View</button></div>`;
   } else if (job.status === 'error' && job.retryFn) {
@@ -883,7 +970,15 @@ async function runFrameJob(jobId, videoOption, format, timestamps) {
     const filename = extractFilename(res.headers.get('Content-Disposition'));
     const blob = await res.blob();
     const blobUrl = URL.createObjectURL(blob);
-    updateJob(jobId, { status: 'done', step: null, blobUrl, filename });
+    updateJob(
+      jobId,
+      {
+        status: 'done', step: null, blobUrl, filename,
+        artifactUrl: `/api/jobs/${encodeURIComponent(jobId)}/artifact`,
+        artifactSaved: true,
+      },
+      { artifactBlob: blob },
+    );
     await showExtractedFrames(blob, filename, contentType, state.downloadMeta?.title);
   } catch (err) {
     updateJob(jobId, { status: 'error', step: null, errorMsg: err.message });
@@ -900,7 +995,17 @@ async function runClipJob(jobId, videoOption, startTime, endTime) {
     fd.append('start_time', String(startTime));
     fd.append('end_time', String(endTime));
     const { blob, filename } = await sendRequest('/api/clip-video', fd);
-    updateJob(jobId, { status: 'done', step: null, blobUrl: URL.createObjectURL(blob), filename });
+    updateJob(
+      jobId,
+      {
+        status: 'done', step: null,
+        blobUrl: URL.createObjectURL(blob),
+        filename,
+        artifactUrl: `/api/jobs/${encodeURIComponent(jobId)}/artifact`,
+        artifactSaved: true,
+      },
+      { artifactBlob: blob },
+    );
   } catch (err) {
     updateJob(jobId, { status: 'error', step: null, errorMsg: err.message });
   }
@@ -1718,4 +1823,5 @@ window.addEventListener('beforeunload', () => {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 initializeTheme();
+restoreJobHistory();
 initializeServerMode();

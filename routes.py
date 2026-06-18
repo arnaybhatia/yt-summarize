@@ -31,6 +31,11 @@ except ImportError:
     fitz = None
 
 api = Blueprint("api", __name__)
+TASK_HISTORY_DIR = os.getenv(
+    "TASK_HISTORY_DIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "task-history"),
+)
+TASK_HISTORY_FILE = "jobs.json"
 
 MEDIA_URL_RE = re.compile(r"https://[^\"'<>\\]+")
 VSCO_MEDIA_HINT_RE = re.compile(r"\.(?:jpg|jpeg|png|webp|mp4)(?:\?|$)", re.IGNORECASE)
@@ -66,6 +71,87 @@ DIRECT_DOWNLOAD_OPTION_IDS = {
     "instagram-videos-original",
     "instagram-media-original",
 }
+
+
+def _ensure_task_history_dir() -> None:
+    os.makedirs(TASK_HISTORY_DIR, exist_ok=True)
+
+
+def _task_history_path() -> str:
+    _ensure_task_history_dir()
+    return os.path.join(TASK_HISTORY_DIR, TASK_HISTORY_FILE)
+
+
+def _load_task_history() -> list[dict]:
+    path = _task_history_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            jobs = json.load(f)
+        return jobs if isinstance(jobs, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_task_history(jobs: list[dict]) -> None:
+    path = _task_history_path()
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(jobs, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _safe_job_id(value: str) -> str:
+    safe = secure_filename(value or "")
+    if not safe:
+        raise ValueError("Job id is required.")
+    return safe
+
+
+def _sanitize_job(job: dict) -> dict:
+    allowed = {
+        "id", "type", "label", "status", "step", "filename", "artifactUrl",
+        "artifactSaved", "transcript", "transcriptView", "errorMsg", "createdAt",
+        "updatedAt",
+    }
+    sanitized = {key: job.get(key) for key in allowed if key in job}
+    sanitized["id"] = _safe_job_id(str(sanitized.get("id", "")))
+    sanitized["type"] = str(sanitized.get("type") or "generic")[:80]
+    sanitized["label"] = str(sanitized.get("label") or "")[:500]
+    sanitized["status"] = str(sanitized.get("status") or "pending")[:40]
+    sanitized["step"] = sanitized.get("step") if sanitized.get("step") is None else str(sanitized.get("step"))[:300]
+    sanitized["filename"] = (
+        _sanitize_filename(str(sanitized.get("filename") or ""), "download")
+        if sanitized.get("filename")
+        else None
+    )
+    sanitized["transcriptView"] = str(sanitized.get("transcriptView") or "timestamped")[:40]
+    sanitized["errorMsg"] = sanitized.get("errorMsg") if sanitized.get("errorMsg") is None else str(sanitized.get("errorMsg"))[:1000]
+    sanitized["createdAt"] = str(sanitized.get("createdAt") or "")[:80]
+    sanitized["updatedAt"] = str(sanitized.get("updatedAt") or "")[:80]
+    transcript = sanitized.get("transcript")
+    if isinstance(transcript, dict):
+        sanitized["transcript"] = {
+            "plain": str(transcript.get("plain") or ""),
+            "timestamped": str(transcript.get("timestamped") or ""),
+        }
+    else:
+        sanitized["transcript"] = None
+    return sanitized
+
+
+def _job_artifact_path(job_id: str, filename: str) -> str:
+    return os.path.join(TASK_HISTORY_DIR, job_id, _sanitize_filename(filename, "download"))
+
+
+def _upsert_task_history(job: dict) -> dict:
+    jobs = _load_task_history()
+    without_job = [item for item in jobs if item.get("id") != job["id"]]
+    without_job.append(job)
+    without_job.sort(key=lambda item: item.get("createdAt") or item.get("updatedAt") or "")
+    _save_task_history(without_job[-200:])
+    return job
 
 
 def _cleanup_dir(path: str) -> None:
@@ -1208,6 +1294,55 @@ def media_options():
         return jsonify(_build_media_options(url))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/jobs", methods=["GET"])
+def list_jobs():
+    jobs = _load_task_history()
+    return jsonify({"jobs": list(reversed(jobs))})
+
+
+@api.route("/api/jobs", methods=["POST"])
+def save_job():
+    try:
+        if request.content_type and request.content_type.startswith("multipart/form-data"):
+            raw_job = request.form.get("job", "{}")
+            job = _sanitize_job(json.loads(raw_job))
+            artifact = request.files.get("artifact")
+            if artifact and artifact.filename:
+                filename = _sanitize_filename(job.get("filename") or artifact.filename, "download")
+                job["filename"] = filename
+                job["artifactUrl"] = f"/api/jobs/{urllib.parse.quote(job['id'])}/artifact"
+                job["artifactSaved"] = True
+                artifact_dir = os.path.join(TASK_HISTORY_DIR, job["id"])
+                os.makedirs(artifact_dir, exist_ok=True)
+                artifact.save(_job_artifact_path(job["id"], filename))
+        else:
+            payload = request.get_json(silent=True) or {}
+            job = _sanitize_job(payload.get("job") or payload)
+
+        _upsert_task_history(job)
+        return jsonify({"job": job})
+    except (ValueError, json.JSONDecodeError) as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@api.route("/api/jobs/<job_id>/artifact", methods=["GET"])
+def job_artifact(job_id):
+    try:
+        safe_id = _safe_job_id(job_id)
+        job = next((item for item in _load_task_history() if item.get("id") == safe_id), None)
+        if not job or not job.get("filename"):
+            return jsonify({"error": "Artifact not found."}), 404
+
+        path = _job_artifact_path(safe_id, job["filename"])
+        if not os.path.exists(path):
+            return jsonify({"error": "Artifact not found."}), 404
+        return send_file(path, as_attachment=True, download_name=job["filename"], conditional=True, etag=False)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @api.route("/api/video-preview", methods=["GET"])
